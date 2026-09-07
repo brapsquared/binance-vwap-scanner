@@ -11,6 +11,7 @@ from scanner import (
     chunked,
     compute_multi_series,
     compute_series,
+    enrich_market_caps,
     fetch_resilient,
     normalize_binance_klines,
     scale_compatible,
@@ -104,6 +105,17 @@ class RollingVwapTests(unittest.TestCase):
         self.assertEqual(row["metrics"]["7"]["status"], "above")
         self.assertAlmostEqual(row["metrics"]["7"]["distance_pct"], 20.0)
         self.assertEqual(row["metrics"]["30"]["status"], "insufficient")
+
+    def test_market_caps_follow_velo_canonical_coin_mapping(self):
+        snapshot = [{"symbol": "PEPEUSDT"}, {"symbol": "UNKNOWNUSDT"}]
+        mapped = enrich_market_caps(
+            snapshot,
+            {"PEPEUSDT": "1000PEPE"},
+            [{"coin": "1000PEPE", "circ_dollars": "1500000000", "fdv_dollars": "1600000000"}],
+        )
+        self.assertEqual(mapped[0]["market_cap"], 1_500_000_000.0)
+        self.assertEqual(mapped[0]["fdv"], 1_600_000_000.0)
+        self.assertIsNone(mapped[1]["market_cap"])
 
 
 if __name__ == "__main__":

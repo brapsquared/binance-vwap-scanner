@@ -45,7 +45,8 @@ def fetch_resilient(products: Sequence[str], fetcher) -> tuple[list[dict], list[
     try:
         return fetcher(products), []
     except Exception as exc:
-        if "invalid products or coins" not in str(exc).lower() and "invalid products" not in str(exc).lower():
+        message = str(exc).lower()
+        if not any(fragment in message for fragment in ("invalid products or coins", "invalid products", "invalid coins param")):
             raise
         if len(products) == 1:
             return [], [products[0]]
@@ -205,6 +206,36 @@ def fetch_velo_rows(products: Sequence[str], begin_ms: int, end_ms: int, key: st
         raise RuntimeError(f"Velo HTTP {exc.code}: {body}") from exc
 
 
+def fetch_velo_caps(coins: Sequence[str], key: str) -> list[dict]:
+    params = urllib.parse.urlencode({"coins": ",".join(coins)})
+    auth = base64.b64encode(f"api:{key}".encode()).decode()
+    req = urllib.request.Request(f"{VELO_BASE}/api/v1/caps?{params}", headers={"Authorization": f"Basic {auth}", "User-Agent": UA})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as response:
+            return list(csv.DictReader(io.StringIO(response.read().decode())))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode(errors="replace")[:300]
+        raise RuntimeError(f"Velo caps HTTP {exc.code}: {body}") from exc
+
+
+def enrich_market_caps(snapshot: list[dict], coin_by_product: dict[str, str], cap_rows: Sequence[dict]) -> list[dict]:
+    caps = {}
+    for row in cap_rows:
+        coin = row.get("coin")
+        if coin:
+            caps[coin] = {
+                "market_cap": _number(row.get("circ_dollars")),
+                "fdv": _number(row.get("fdv_dollars")),
+                "market_cap_as_of": row.get("time"),
+            }
+    for row in snapshot:
+        cap = caps.get(coin_by_product.get(row["symbol"]), {})
+        row["market_cap"] = cap.get("market_cap")
+        row["fdv"] = cap.get("fdv")
+        row["market_cap_as_of"] = cap.get("market_cap_as_of")
+    return snapshot
+
+
 def refresh(output_dir: Path, history_days: int = HISTORY_DAYS, window: int = WINDOW_DAYS) -> dict:
     output_dir.mkdir(parents=True, exist_ok=True)
     histories_dir = output_dir / "history"
@@ -267,12 +298,16 @@ def refresh(output_dir: Path, history_days: int = HISTORY_DAYS, window: int = WI
     recent_begin = end - timedelta(days=89)
     batch_size = max(1, VALUE_LIMIT // (89 * len(COLUMNS)))
     scale_mismatches = []
+    velo_coin_by_product = {}
     for request_no, batch in enumerate(chunked(velo_symbols, batch_size), start=1):
         try:
             fetched = fetch_velo_rows(batch, int(recent_begin.timestamp() * 1000), end_ms, key)
             fetched_by_symbol = {}
             for row in fetched:
-                fetched_by_symbol.setdefault(row.get("product"), []).append(row)
+                product = row.get("product")
+                fetched_by_symbol.setdefault(product, []).append(row)
+                if product and row.get("coin"):
+                    velo_coin_by_product[product] = row["coin"]
             for product, product_rows in fetched_by_symbol.items():
                 if product in rows_by_symbol and scale_compatible(rows_by_symbol[product], product_rows):
                     rows_by_symbol[product].extend(product_rows)
@@ -283,12 +318,27 @@ def refresh(output_dir: Path, history_days: int = HISTORY_DAYS, window: int = WI
             errors.append({"stage": "velo_recent", "symbols": batch, "error": str(exc)})
             print(f"Velo recent request {request_no} failed: {exc}", flush=True)
 
+    coin_by_product = {symbol: velo_coin_by_product.get(symbol, symbol.removesuffix("USDT")) for symbol in symbols}
+    cap_rows = []
+    cap_rejected = []
+    cap_coins = sorted(set(coin_by_product.values()))
+    for batch_no, batch in enumerate(chunked(cap_coins, 10), start=1):
+        try:
+            rows, rejected = fetch_resilient(batch, lambda coins: fetch_velo_caps(coins, key))
+            cap_rows.extend(rows)
+            cap_rejected.extend(rejected)
+            if batch_no % 10 == 0 or batch_no * 10 >= len(cap_coins):
+                print(f"Velo market caps: {min(batch_no * 10, len(cap_coins))}/{len(cap_coins)} coin ids", flush=True)
+        except Exception as exc:
+            errors.append({"stage": "velo_caps", "coins": batch, "error": str(exc)})
+
     histories = {}
     for symbol, rows in rows_by_symbol.items():
         series = compute_multi_series(rows, windows=VWAP_WINDOWS)
         histories[symbol] = series
         (histories_dir / f"{symbol}.json").write_text(json.dumps(series, separators=(",", ":")), encoding="utf-8")
     snapshot = build_snapshot(histories, windows=VWAP_WINDOWS)
+    snapshot = enrich_market_caps(snapshot, coin_by_product, cap_rows)
     generated = datetime.now(timezone.utc).isoformat()
     payload = {
         "meta": {
@@ -301,6 +351,9 @@ def refresh(output_dir: Path, history_days: int = HISTORY_DAYS, window: int = WI
             "velo_supported_symbols": len(velo_symbols),
             "velo_unsupported_symbols": unsupported,
             "velo_scale_mismatches": sorted(set(scale_mismatches)),
+            "market_cap_source": "Velo circulating market cap snapshot",
+            "market_cap_coverage": sum(1 for row in snapshot if row.get("market_cap") is not None),
+            "market_cap_unavailable_coin_ids": sorted(set(cap_rejected)),
             "batch_size": batch_size,
             "errors": errors,
         },

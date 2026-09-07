@@ -2,6 +2,10 @@
 
 A local read-only market screener for current Binance USDT spot pairs. It downloads 455 completed daily candles from Binance, overlays the latest 89 days from Velo, calculates rolling 7D, 30D, 90D, and 365D VWAPs as `sum(dollar_volume) / sum(coin_volume)`, ranks price distance above/below the selected window, and plots price with VWAP when a ticker is selected.
 
+The scanner also enriches recognized assets with Velo circulating market capitalization. The table can be sorted by market cap and filtered with multi-select buckets: mega-cap (≥$10B), large-cap ($1B–$10B), mid-cap ($100M–$1B), small-cap (<$100M), and Unknown. Bucket combinations persist locally.
+
+Light mode remains the default, with a persistent dark-mode toggle in the header.
+
 The detail panel uses the locally bundled, Apache-2.0 licensed TradingView Lightweight Charts 5.2.1. It supports native wheel/pinch zoom, drag-to-pan, crosshair inspection, responsive resizing, and 1Y/2Y/All range controls without an API key or CDN dependency.
 
 > Why hybrid data? The configured Velo REST entitlement rejects starts older than 90 days. Binance-native klines provide the required 365-day backfill; Velo remains the preferred recent-data layer and overrides matching dates.
