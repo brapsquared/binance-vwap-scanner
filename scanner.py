@@ -10,7 +10,6 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -20,6 +19,7 @@ VELO_BASE = "https://api.velo.xyz"
 BINANCE_INFO = "https://api.binance.com/api/v3/exchangeInfo"
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36"
 WINDOW_DAYS = 365
+VWAP_WINDOWS = (7, 30, 90, 365)
 HISTORY_DAYS = 455
 VALUE_LIMIT = 22_500
 COLUMNS = ("close_price", "coin_volume", "dollar_volume")
@@ -63,54 +63,73 @@ def _number(value):
         return None
 
 
-def compute_series(rows: Iterable[dict], window: int = WINDOW_DAYS) -> list[dict]:
-    """Build close + rolling VWAP, using quote-volume/base-volume."""
+def compute_multi_series(rows: Iterable[dict], windows: Sequence[int] = VWAP_WINDOWS) -> list[dict]:
+    """Build close plus multiple rolling VWAPs from quote/base volume."""
+    windows = tuple(sorted(set(int(value) for value in windows)))
     deduped = {str(row.get("time")): row for row in rows}
     ordered = sorted(deduped.values(), key=lambda row: int(row.get("time", 0)) if str(row.get("time", "")).isdigit() else str(row.get("time", "")))
-    queue: deque[tuple[float, float]] = deque()
-    quote_sum = 0.0
-    base_sum = 0.0
+    base_prefix = [0.0]
+    quote_prefix = [0.0]
     result = []
-    for row in ordered:
+    for index, row in enumerate(ordered):
         close = _number(row.get("close_price", row.get("close")))
         base = _number(row.get("coin_volume"))
         quote = _number(row.get("dollar_volume"))
         base = base if base is not None and base >= 0 else 0.0
         quote = quote if quote is not None and quote >= 0 else 0.0
-        queue.append((base, quote))
-        base_sum += base
-        quote_sum += quote
-        if len(queue) > window:
-            old_base, old_quote = queue.popleft()
-            base_sum -= old_base
-            quote_sum -= old_quote
-        vwap = quote_sum / base_sum if len(queue) == window and base_sum > 0 else None
+        base_prefix.append(base_prefix[-1] + base)
+        quote_prefix.append(quote_prefix[-1] + quote)
         raw_time = row.get("time")
         if str(raw_time).isdigit():
             date = datetime.fromtimestamp(int(raw_time) / 1000, tz=timezone.utc).date().isoformat()
         else:
             date = str(raw_time)
-        result.append({"time": date, "close": close, "vwap": vwap})
+        point = {"time": date, "close": close}
+        for window in windows:
+            if index + 1 >= window:
+                base_sum = base_prefix[index + 1] - base_prefix[index + 1 - window]
+                quote_sum = quote_prefix[index + 1] - quote_prefix[index + 1 - window]
+                point[f"vwap_{window}"] = quote_sum / base_sum if base_sum > 0 else None
+            else:
+                point[f"vwap_{window}"] = None
+        result.append(point)
     return result
 
 
-def build_snapshot(histories: dict[str, list[dict]]) -> list[dict]:
+def compute_series(rows: Iterable[dict], window: int = WINDOW_DAYS) -> list[dict]:
+    """Backward-compatible single-window series."""
+    return [
+        {"time": point["time"], "close": point["close"], "vwap": point[f"vwap_{window}"]}
+        for point in compute_multi_series(rows, windows=(window,))
+    ]
+
+
+def _metric(price, vwap):
+    if price is None or vwap is None or vwap <= 0:
+        return {"vwap": vwap, "distance_pct": None, "status": "insufficient"}
+    distance = (price / vwap - 1) * 100
+    return {"vwap": vwap, "distance_pct": distance, "status": "above" if distance >= 0 else "below"}
+
+
+def build_snapshot(histories: dict[str, list[dict]], windows: Sequence[int] | None = None) -> list[dict]:
     rows = []
     for symbol, series in histories.items():
         latest = next((point for point in reversed(series) if point.get("close") is not None), None)
         if not latest:
-            rows.append({"symbol": symbol, "price": None, "vwap": None, "distance_pct": None, "status": "unavailable", "as_of": None})
+            row = {"symbol": symbol, "price": None, "vwap": None, "distance_pct": None, "status": "unavailable", "as_of": None, "metrics": {}}
+            if windows:
+                row["metrics"] = {str(period): {"vwap": None, "distance_pct": None, "status": "unavailable"} for period in windows}
+            rows.append(row)
             continue
         price = _number(latest.get("close"))
-        vwap = _number(latest.get("vwap"))
-        if price is None or vwap is None or vwap <= 0:
-            distance = None
-            status = "insufficient"
-        else:
-            distance = (price / vwap - 1) * 100
-            status = "above" if distance >= 0 else "below"
         valid_days = sum(1 for point in series if point.get("close") is not None)
-        rows.append({"symbol": symbol, "price": price, "vwap": vwap, "distance_pct": distance, "status": status, "as_of": latest.get("time"), "history_days": valid_days})
+        if windows is None:
+            metric = _metric(price, _number(latest.get("vwap")))
+            rows.append({"symbol": symbol, "price": price, **metric, "as_of": latest.get("time"), "history_days": valid_days})
+        else:
+            metrics = {str(period): _metric(price, _number(latest.get(f"vwap_{period}"))) for period in windows}
+            default_metric = metrics[str(max(windows))]
+            rows.append({"symbol": symbol, "price": price, **default_metric, "metrics": metrics, "as_of": latest.get("time"), "history_days": valid_days})
     rank = {"above": 0, "below": 1, "insufficient": 2, "unavailable": 3}
     rows.sort(key=lambda row: (rank[row["status"]], -(row["distance_pct"] if row["distance_pct"] is not None else -math.inf), row["symbol"]))
     return rows
@@ -266,10 +285,10 @@ def refresh(output_dir: Path, history_days: int = HISTORY_DAYS, window: int = WI
 
     histories = {}
     for symbol, rows in rows_by_symbol.items():
-        series = compute_series(rows, window=window)
+        series = compute_multi_series(rows, windows=VWAP_WINDOWS)
         histories[symbol] = series
         (histories_dir / f"{symbol}.json").write_text(json.dumps(series, separators=(",", ":")), encoding="utf-8")
-    snapshot = build_snapshot(histories)
+    snapshot = build_snapshot(histories, windows=VWAP_WINDOWS)
     generated = datetime.now(timezone.utc).isoformat()
     payload = {
         "meta": {

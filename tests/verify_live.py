@@ -21,17 +21,25 @@ velo = fetch_velo_rows(
     load_velo_key(),
 )
 merged = {str(row["time"]): row for row in binance + velo}
-last_365 = sorted(merged.values(), key=lambda row: int(row["time"]))[-365:]
-manual_vwap = sum(float(row["dollar_volume"]) for row in last_365) / sum(
-    float(row["coin_volume"]) for row in last_365
-)
+manual = {}
+for period in (7, 30, 90, 365):
+    window = sorted(merged.values(), key=lambda row: int(row["time"]))[-period:]
+    manual[str(period)] = sum(float(row["dollar_volume"]) for row in window) / sum(
+        float(row["coin_volume"]) for row in window
+    )
+comparisons = {
+    period: {
+        "snapshot": btc["metrics"][period]["vwap"],
+        "manual": value,
+        "absolute_difference": abs(btc["metrics"][period]["vwap"] - value),
+    }
+    for period, value in manual.items()
+}
 print(json.dumps({
     "symbols": len(payload["rows"]),
     "refresh_errors": len(payload["meta"]["errors"]),
-    "btc_snapshot_vwap": btc["vwap"],
-    "btc_manual_vwap": manual_vwap,
-    "absolute_difference": abs(btc["vwap"] - manual_vwap),
-    "btc_status": btc["status"],
+    "btc_vwap_comparisons": comparisons,
+    "btc_statuses": {period: btc["metrics"][period]["status"] for period in manual},
     "btc_history_days": btc["history_days"],
     "history_files": len(list((data / "history").glob("*.json"))),
 }, indent=2))

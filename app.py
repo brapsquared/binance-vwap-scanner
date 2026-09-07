@@ -4,6 +4,8 @@ import argparse
 import json
 import mimetypes
 import re
+import threading
+from datetime import datetime, timezone
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
@@ -14,6 +16,19 @@ ROOT = Path(__file__).resolve().parent
 STATIC = ROOT / "static"
 DATA = ROOT / "data"
 SYMBOL = re.compile(r"^[A-Z0-9]+USDT$")
+REFRESH_LOCK = threading.Lock()
+REFRESH_STATE = {"running": False, "started_at": None, "finished_at": None, "error": None}
+
+
+def run_refresh():
+    try:
+        refresh(DATA)
+        REFRESH_STATE.update({"finished_at": datetime.now(timezone.utc).isoformat(), "error": None})
+    except Exception as exc:
+        REFRESH_STATE.update({"finished_at": datetime.now(timezone.utc).isoformat(), "error": str(exc)})
+    finally:
+        REFRESH_STATE["running"] = False
+        REFRESH_LOCK.release()
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -21,6 +36,8 @@ class Handler(SimpleHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/api/scanner":
             return self.send_file(DATA / "scanner.json", "application/json")
+        if path == "/api/refresh-status":
+            return self.send_json(REFRESH_STATE)
         if path.startswith("/api/chart/"):
             symbol = path.rsplit("/", 1)[-1].upper()
             if not SYMBOL.fullmatch(symbol):
@@ -34,6 +51,24 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.send_error(403)
             return self.send_file(target, mimetypes.guess_type(target.name)[0] or "application/octet-stream")
         return self.send_error(404)
+
+    def do_POST(self):
+        if urlparse(self.path).path != "/api/refresh":
+            return self.send_error(404)
+        if not REFRESH_LOCK.acquire(blocking=False):
+            return self.send_json({"accepted": False, **REFRESH_STATE}, status=409)
+        REFRESH_STATE.update({"running": True, "started_at": datetime.now(timezone.utc).isoformat(), "finished_at": None, "error": None})
+        threading.Thread(target=run_refresh, daemon=True).start()
+        return self.send_json({"accepted": True, **REFRESH_STATE}, status=202)
+
+    def send_json(self, payload, status=200):
+        content = json.dumps(payload, separators=(",", ":")).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(content)))
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(content)
 
     def send_file(self, path: Path, content_type: str):
         if not path.exists():

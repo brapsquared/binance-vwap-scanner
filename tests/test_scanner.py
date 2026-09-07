@@ -6,7 +6,16 @@ from pathlib import Path
 
 from datetime import datetime, timezone
 
-from scanner import compute_series, build_snapshot, chunked, fetch_resilient, time_windows, normalize_binance_klines, scale_compatible
+from scanner import (
+    build_snapshot,
+    chunked,
+    compute_multi_series,
+    compute_series,
+    fetch_resilient,
+    normalize_binance_klines,
+    scale_compatible,
+    time_windows,
+)
 
 
 class RollingVwapTests(unittest.TestCase):
@@ -77,6 +86,24 @@ class RollingVwapTests(unittest.TestCase):
         velo = [{"time": "1", "close_price": "0.01"}]
         self.assertFalse(scale_compatible(binance, velo))
         self.assertTrue(scale_compatible(binance, [{"time": "1", "close_price": "0.000011"}]))
+
+    def test_multi_series_emits_each_requested_rolling_window(self):
+        rows = [
+            {"time": str(day), "close_price": str(day), "coin_volume": "1", "dollar_volume": str(day)}
+            for day in range(1, 11)
+        ]
+        latest = compute_multi_series(rows, windows=(3, 7))[-1]
+        self.assertAlmostEqual(latest["vwap_3"], 9.0)
+        self.assertAlmostEqual(latest["vwap_7"], 7.0)
+
+    def test_snapshot_contains_metrics_for_every_window(self):
+        histories = {
+            "AAAUSDT": [{"time": "t", "close": 12.0, "vwap_7": 10.0, "vwap_30": None}]
+        }
+        row = build_snapshot(histories, windows=(7, 30))[0]
+        self.assertEqual(row["metrics"]["7"]["status"], "above")
+        self.assertAlmostEqual(row["metrics"]["7"]["distance_pct"], 20.0)
+        self.assertEqual(row["metrics"]["30"]["status"], "insufficient")
 
 
 if __name__ == "__main__":
