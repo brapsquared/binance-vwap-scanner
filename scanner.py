@@ -6,6 +6,7 @@ import io
 import json
 import math
 import os
+import statistics
 import time
 import urllib.error
 import urllib.parse
@@ -15,6 +16,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Iterator, Sequence
 
+from alert_store import AlertStore
+from signals import enrich_live_signals
+
 VELO_BASE = "https://api.velo.xyz"
 BINANCE_INFO = "https://api.binance.com/api/v3/exchangeInfo"
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36"
@@ -23,6 +27,7 @@ VWAP_WINDOWS = (7, 30, 90, 365)
 HISTORY_DAYS = 455
 VALUE_LIMIT = 22_500
 COLUMNS = ("close_price", "coin_volume", "dollar_volume")
+MODEL_PATH = Path(__file__).resolve().parent / "models" / "trend_probability.json"
 
 
 def chunked(items: Sequence[str], size: int) -> Iterator[list[str]]:
@@ -62,6 +67,14 @@ def _number(value):
         return number if math.isfinite(number) else None
     except (TypeError, ValueError):
         return None
+
+
+def trailing_median_quote_volume(rows: Sequence[dict], days: int = 30) -> float | None:
+    deduped = {str(row.get("time")): row for row in rows}
+    ordered = sorted(deduped.values(), key=lambda row: int(row.get("time", 0)) if str(row.get("time", "")).isdigit() else str(row.get("time", "")))
+    values = [_number(row.get("dollar_volume")) for row in ordered[-days:]]
+    values = [value for value in values if value is not None and value >= 0]
+    return float(statistics.median(values)) if values else None
 
 
 def compute_multi_series(rows: Iterable[dict], windows: Sequence[int] = VWAP_WINDOWS) -> list[dict]:
@@ -338,7 +351,13 @@ def refresh(output_dir: Path, history_days: int = HISTORY_DAYS, window: int = WI
         histories[symbol] = series
         (histories_dir / f"{symbol}.json").write_text(json.dumps(series, separators=(",", ":")), encoding="utf-8")
     snapshot = build_snapshot(histories, windows=VWAP_WINDOWS)
+    for row in snapshot:
+        row["liquidity_30d"] = trailing_median_quote_volume(rows_by_symbol.get(row["symbol"], []), days=30)
     snapshot = enrich_market_caps(snapshot, coin_by_product, cap_rows)
+    model = json.loads(MODEL_PATH.read_text(encoding="utf-8")) if MODEL_PATH.exists() else {"groups": {}}
+    snapshot, alert_candidates = enrich_live_signals(snapshot, histories, model)
+    alert_store = AlertStore(output_dir / "alerts.db")
+    alerts = alert_store.record(alert_candidates, cooldown_days=10)
     generated = datetime.now(timezone.utc).isoformat()
     payload = {
         "meta": {
@@ -354,9 +373,15 @@ def refresh(output_dir: Path, history_days: int = HISTORY_DAYS, window: int = WI
             "market_cap_source": "Velo circulating market cap snapshot",
             "market_cap_coverage": sum(1 for row in snapshot if row.get("market_cap") is not None),
             "market_cap_unavailable_coin_ids": sorted(set(cap_rejected)),
+            "signal_model": model.get("version"),
+            "signal_probability_horizon_days": model.get("horizon_days"),
+            "signal_oos": model.get("oos"),
+            "alert_count": len(alerts),
+            "alert_history_count": alert_store.count(),
             "batch_size": batch_size,
             "errors": errors,
         },
+        "alerts": alerts,
         "rows": snapshot,
     }
     (output_dir / "scanner.json").write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")

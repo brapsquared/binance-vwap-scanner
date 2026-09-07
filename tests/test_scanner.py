@@ -16,6 +16,7 @@ from scanner import (
     normalize_binance_klines,
     scale_compatible,
     time_windows,
+    trailing_median_quote_volume,
 )
 
 
@@ -116,6 +117,14 @@ class RollingVwapTests(unittest.TestCase):
         self.assertEqual(mapped[0]["market_cap"], 1_500_000_000.0)
         self.assertEqual(mapped[0]["fdv"], 1_600_000_000.0)
         self.assertIsNone(mapped[1]["market_cap"])
+
+    def test_trailing_liquidity_deduplicates_dates(self):
+        rows = [
+            {"time": "1", "dollar_volume": "100"},
+            {"time": "2", "dollar_volume": "200"},
+            {"time": "2", "dollar_volume": "300"},
+        ]
+        self.assertEqual(trailing_median_quote_volume(rows, days=2), 200.0)
 
 
 if __name__ == "__main__":

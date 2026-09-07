@@ -8,8 +8,9 @@ import threading
 from datetime import datetime, timezone
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
+from alert_store import AlertStore
 from scanner import refresh
 
 ROOT = Path(__file__).resolve().parent
@@ -33,11 +34,19 @@ def run_refresh():
 
 class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
-        path = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        path = parsed.path
         if path == "/api/scanner":
             return self.send_file(DATA / "scanner.json", "application/json")
         if path == "/api/refresh-status":
             return self.send_json(REFRESH_STATE)
+        if path == "/api/alerts-history":
+            query = parse_qs(parsed.query)
+            symbol = query.get("symbol", [None])[0]
+            alert_type = query.get("type", [None])[0]
+            store = AlertStore(DATA / "alerts.db")
+            alerts = store.list(symbol=symbol, alert_type=alert_type)
+            return self.send_json({"count": len(alerts), "total": store.count(), "alerts": alerts})
         if path.startswith("/api/chart/"):
             symbol = path.rsplit("/", 1)[-1].upper()
             if not SYMBOL.fullmatch(symbol):

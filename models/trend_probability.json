@@ -1,0 +1,86 @@
+{
+  "version": "mtf-vwap-state-v1",
+  "generated_at": "2026-09-07T10:12:36.568656+00:00",
+  "horizon_days": 20,
+  "definition": "Probability that the close-to-close 20-day return continues in the indicated trend or flip direction",
+  "smoothing": "Beta prior: 10 wins / 20 samples",
+  "sampling": "20-day non-overlapping score samples; 10-day cooldown for flip alerts",
+  "universe": "Current-survivor Binance USDT spot symbols passing $5M trailing median daily quote volume",
+  "test_cutoff": "2025-09-06T00:00:00+00:00",
+  "oos": {
+    "records": 1744,
+    "brier": 0.20758806994528994,
+    "accuracy": 0.7190366972477065
+  },
+  "groups": {
+    "alert:bearish_flip_confirmed": {
+      "probability": 0.696,
+      "samples": 1355,
+      "wins": 947,
+      "train_samples": 857,
+      "test_samples": 498
+    },
+    "alert:bearish_flip_watch": {
+      "probability": 0.675676,
+      "samples": 313,
+      "wins": 215,
+      "train_samples": 209,
+      "test_samples": 104
+    },
+    "alert:bullish_flip_confirmed": {
+      "probability": 0.246947,
+      "samples": 717,
+      "wins": 172,
+      "train_samples": 499,
+      "test_samples": 218
+    },
+    "alert:bullish_flip_watch": {
+      "probability": 0.326336,
+      "samples": 504,
+      "wins": 161,
+      "train_samples": 230,
+      "test_samples": 274
+    },
+    "score:-2": {
+      "probability": 0.669786,
+      "samples": 728,
+      "wins": 491,
+      "train_samples": 409,
+      "test_samples": 319
+    },
+    "score:-4": {
+      "probability": 0.627792,
+      "samples": 383,
+      "wins": 243,
+      "train_samples": 164,
+      "test_samples": 219
+    },
+    "score:0": {
+      "probability": 0.510204,
+      "samples": 29,
+      "wins": 15,
+      "train_samples": 14,
+      "test_samples": 15
+    },
+    "score:2": {
+      "probability": 0.336134,
+      "samples": 218,
+      "wins": 70,
+      "train_samples": 126,
+      "test_samples": 92
+    },
+    "score:4": {
+      "probability": 0.426667,
+      "samples": 55,
+      "wins": 22,
+      "train_samples": 35,
+      "test_samples": 20
+    }
+  },
+  "caveats": [
+    "Empirical association, not a guaranteed probability",
+    "Current-symbol survivorship bias",
+    "Correlated cross-sectional observations",
+    "Spot history does not model perpetual funding or short execution"
+  ]
+}
