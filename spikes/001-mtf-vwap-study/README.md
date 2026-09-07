@@ -8,8 +8,9 @@ Given daily Binance USDT spot OHLCV, do relationships among rolling 7D, 30D, 90D
 
 - 487 current Binance USDT spot symbols; up to 1,000 completed UTC daily bars each.
 - Coverage: 2023-12-06 through 2026-09-06, depending on listing date.
-- Signal computed at daily close; entry at next daily open.
-- 20 bps round-trip cost.
+- Signal computed at daily close; next-open entry is retained only as an optimistic diagnostic.
+- A conservative sensitivity delays entry to the next completed UTC close and uses 30/60 bps cost cases.
+- 20 bps round-trip cost in the original event study.
 - Minimum $5M trailing 30-day median quote volume.
 - Ten-day same-symbol cooldown for event studies.
 - Latest 365 days held out as the test period.
@@ -39,6 +40,19 @@ Given daily Binance USDT spot OHLCV, do relationships among rolling 7D, 30D, 90D
 | 7/30 regime cross | Long | 66 | -1.15% | 27.3% | +6.56% | 75.8% |
 
 The long signals often selected relative winners but still lost money outright. Most short-family gains were broad bear-market exposure rather than selection edge.
+
+## Conservative next-close execution sensitivity
+
+To avoid assuming an executable fill at the instantaneous next daily open, entries were delayed to the next completed UTC close and costs increased to 30 bps. Median 20-day returns remained:
+
+| Signal | Side | Train median | Test median | Train hit | Test hit |
+|---|---:|---:|---:|---:|---:|
+| 7D/30D regime cross | Short | +5.28% | +13.93% | 61.8% | 68.2% |
+| Fresh stack | Short | +4.25% | +6.69% | 60.0% | 65.1% |
+| Pullback recapture | Short | +3.18% | +5.87% | 55.1% | 66.5% |
+| 7D/30D regime cross | Long | -7.80% | -1.22% | 33.3% | 21.5% |
+
+The directional short information survives a full-day delay. This improves confidence in the signal association, but it does not solve the portfolio/exits problem or prove market-relative alpha.
 
 ## Trade-level exit sensitivity for the leading short trigger
 
@@ -89,6 +103,7 @@ The fixed-horizon event return did not survive conversion into a robust, non-ove
 - `study.py` — data acquisition, signals, and event study.
 - `analyze.py` — same-date cross-sectional baseline and candidate gate.
 - `trade_backtest.py` — non-overlapping VWAP-exit sensitivity.
+- `execution_sensitivity.py` — delayed next-close entries under 20/30/60 bps costs.
 - `regime_sensitivity.py` — explicitly post-hoc BTC regime check.
 - `results/REPORT.md`, CSV outputs, and `test_20d_returns_and_edge.png`.
 
