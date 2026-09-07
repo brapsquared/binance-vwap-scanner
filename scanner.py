@@ -1,0 +1,291 @@
+from __future__ import annotations
+
+import base64
+import csv
+import io
+import json
+import math
+import os
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Iterable, Iterator, Sequence
+
+VELO_BASE = "https://api.velo.xyz"
+BINANCE_INFO = "https://api.binance.com/api/v3/exchangeInfo"
+UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36"
+WINDOW_DAYS = 365
+HISTORY_DAYS = 455
+VALUE_LIMIT = 22_500
+COLUMNS = ("close_price", "coin_volume", "dollar_volume")
+
+
+def chunked(items: Sequence[str], size: int) -> Iterator[list[str]]:
+    for index in range(0, len(items), size):
+        yield list(items[index:index + size])
+
+
+def time_windows(begin: datetime, end: datetime, max_days: int = 89) -> Iterator[tuple[datetime, datetime]]:
+    cursor = begin
+    while cursor < end:
+        stop = min(cursor + timedelta(days=max_days), end)
+        yield cursor, stop
+        cursor = stop
+
+
+def fetch_resilient(products: Sequence[str], fetcher) -> tuple[list[dict], list[str]]:
+    """Split rejected product batches until only unsupported symbols remain."""
+    if not products:
+        return [], []
+    try:
+        return fetcher(products), []
+    except Exception as exc:
+        if "invalid products or coins" not in str(exc).lower() and "invalid products" not in str(exc).lower():
+            raise
+        if len(products) == 1:
+            return [], [products[0]]
+        midpoint = len(products) // 2
+        left_rows, left_bad = fetch_resilient(products[:midpoint], fetcher)
+        right_rows, right_bad = fetch_resilient(products[midpoint:], fetcher)
+        return left_rows + right_rows, left_bad + right_bad
+
+
+def _number(value):
+    try:
+        number = float(value)
+        return number if math.isfinite(number) else None
+    except (TypeError, ValueError):
+        return None
+
+
+def compute_series(rows: Iterable[dict], window: int = WINDOW_DAYS) -> list[dict]:
+    """Build close + rolling VWAP, using quote-volume/base-volume."""
+    deduped = {str(row.get("time")): row for row in rows}
+    ordered = sorted(deduped.values(), key=lambda row: int(row.get("time", 0)) if str(row.get("time", "")).isdigit() else str(row.get("time", "")))
+    queue: deque[tuple[float, float]] = deque()
+    quote_sum = 0.0
+    base_sum = 0.0
+    result = []
+    for row in ordered:
+        close = _number(row.get("close_price", row.get("close")))
+        base = _number(row.get("coin_volume"))
+        quote = _number(row.get("dollar_volume"))
+        base = base if base is not None and base >= 0 else 0.0
+        quote = quote if quote is not None and quote >= 0 else 0.0
+        queue.append((base, quote))
+        base_sum += base
+        quote_sum += quote
+        if len(queue) > window:
+            old_base, old_quote = queue.popleft()
+            base_sum -= old_base
+            quote_sum -= old_quote
+        vwap = quote_sum / base_sum if len(queue) == window and base_sum > 0 else None
+        raw_time = row.get("time")
+        if str(raw_time).isdigit():
+            date = datetime.fromtimestamp(int(raw_time) / 1000, tz=timezone.utc).date().isoformat()
+        else:
+            date = str(raw_time)
+        result.append({"time": date, "close": close, "vwap": vwap})
+    return result
+
+
+def build_snapshot(histories: dict[str, list[dict]]) -> list[dict]:
+    rows = []
+    for symbol, series in histories.items():
+        latest = next((point for point in reversed(series) if point.get("close") is not None), None)
+        if not latest:
+            rows.append({"symbol": symbol, "price": None, "vwap": None, "distance_pct": None, "status": "unavailable", "as_of": None})
+            continue
+        price = _number(latest.get("close"))
+        vwap = _number(latest.get("vwap"))
+        if price is None or vwap is None or vwap <= 0:
+            distance = None
+            status = "insufficient"
+        else:
+            distance = (price / vwap - 1) * 100
+            status = "above" if distance >= 0 else "below"
+        valid_days = sum(1 for point in series if point.get("close") is not None)
+        rows.append({"symbol": symbol, "price": price, "vwap": vwap, "distance_pct": distance, "status": status, "as_of": latest.get("time"), "history_days": valid_days})
+    rank = {"above": 0, "below": 1, "insufficient": 2, "unavailable": 3}
+    rows.sort(key=lambda row: (rank[row["status"]], -(row["distance_pct"] if row["distance_pct"] is not None else -math.inf), row["symbol"]))
+    return rows
+
+
+def load_velo_key() -> str:
+    key = os.environ.get("VELO_API_KEY")
+    if key:
+        return key
+    local = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData/Local")) / "hermes" / ".env"
+    if local.exists():
+        for line in local.read_text(encoding="utf-8").splitlines():
+            if line.startswith("VELO_API_KEY="):
+                return line.split("=", 1)[1].strip().strip('"').strip("'")
+    raise RuntimeError("VELO_API_KEY is not configured in the environment or Hermes .env")
+
+
+def _open_json(url: str, headers: dict | None = None, attempts: int = 3):
+    last_error = None
+    for attempt in range(attempts):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": UA, **(headers or {})})
+            with urllib.request.urlopen(req, timeout=60) as response:
+                return json.loads(response.read().decode())
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            last_error = exc
+            if attempt + 1 < attempts:
+                time.sleep(2 ** attempt)
+    raise RuntimeError(f"Request failed: {url}: {last_error}")
+
+
+def get_binance_usdt_symbols() -> list[str]:
+    payload = _open_json(BINANCE_INFO)
+    return sorted({item["symbol"] for item in payload.get("symbols", []) if item.get("status") == "TRADING" and item.get("quoteAsset") == "USDT" and item.get("isSpotTradingAllowed", True)})
+
+
+def normalize_binance_klines(symbol: str, raw: Sequence[Sequence]) -> list[dict]:
+    return [
+        {"product": symbol, "time": str(row[0]), "close_price": str(row[4]), "coin_volume": str(row[5]), "dollar_volume": str(row[7])}
+        for row in raw
+        if len(row) >= 8
+    ]
+
+
+def scale_compatible(primary_rows: Sequence[dict], overlay_rows: Sequence[dict], max_ratio: float = 2.0) -> bool:
+    if not primary_rows or not overlay_rows:
+        return True
+    primary = _number(max(primary_rows, key=lambda row: int(row.get("time", 0)))["close_price"])
+    overlay = _number(max(overlay_rows, key=lambda row: int(row.get("time", 0)))["close_price"])
+    if primary is None or overlay is None or primary <= 0 or overlay <= 0:
+        return False
+    ratio = overlay / primary
+    return 1 / max_ratio <= ratio <= max_ratio
+
+
+def fetch_binance_klines(symbol: str, end_ms: int, limit: int) -> list[dict]:
+    params = urllib.parse.urlencode({"symbol": symbol, "interval": "1d", "endTime": end_ms, "limit": min(limit, 1000)})
+    return normalize_binance_klines(symbol, _open_json(f"https://api.binance.com/api/v3/klines?{params}"))
+
+
+def fetch_velo_rows(products: Sequence[str], begin_ms: int, end_ms: int, key: str) -> list[dict]:
+    params = urllib.parse.urlencode({
+        "type": "spot", "exchanges": "binance", "products": ",".join(products),
+        "columns": ",".join(COLUMNS), "begin": begin_ms, "end": end_ms, "resolution": 1440,
+    })
+    auth = base64.b64encode(f"api:{key}".encode()).decode()
+    req = urllib.request.Request(f"{VELO_BASE}/api/v1/rows?{params}", headers={"Authorization": f"Basic {auth}", "User-Agent": UA})
+    try:
+        with urllib.request.urlopen(req, timeout=120) as response:
+            return list(csv.DictReader(io.StringIO(response.read().decode())))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode(errors="replace")[:300]
+        raise RuntimeError(f"Velo HTTP {exc.code}: {body}") from exc
+
+
+def refresh(output_dir: Path, history_days: int = HISTORY_DAYS, window: int = WINDOW_DAYS) -> dict:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    histories_dir = output_dir / "history"
+    histories_dir.mkdir(exist_ok=True)
+    key = load_velo_key()
+    symbols = get_binance_usdt_symbols()
+    # Only completed UTC daily candles count toward the rolling window.
+    end = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    end_ms = int(end.timestamp() * 1000) - 1
+    rows_by_symbol = {symbol: [] for symbol in symbols}
+    errors = []
+
+    # Exchange-native history is the complete backfill source. One request per
+    # symbol covers the whole retained chart window.
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = {pool.submit(fetch_binance_klines, symbol, end_ms, history_days + 2): symbol for symbol in symbols}
+        completed = 0
+        for future in as_completed(futures):
+            symbol = futures[future]
+            completed += 1
+            try:
+                rows_by_symbol[symbol].extend(future.result())
+            except Exception as exc:
+                errors.append({"stage": "binance_history", "symbols": [symbol], "error": str(exc)})
+            if completed % 50 == 0 or completed == len(symbols):
+                print(f"Binance history: {completed}/{len(symbols)} symbols", flush=True)
+
+    # Reuse the prior Velo universe discovery if present; product membership
+    # changes slowly and re-isolating every unsupported symbol is expensive.
+    universe_cache = output_dir / "velo_universe.json"
+    unsupported = []
+    if universe_cache.exists():
+        cached = json.loads(universe_cache.read_text(encoding="utf-8"))
+        unsupported = [symbol for symbol in cached.get("unsupported", []) if symbol in symbols]
+    elif (output_dir / "scanner.json").exists():
+        try:
+            previous = json.loads((output_dir / "scanner.json").read_text(encoding="utf-8"))
+            unsupported = [symbol for symbol in previous.get("meta", {}).get("velo_unsupported_symbols", []) if symbol in symbols]
+        except (OSError, json.JSONDecodeError):
+            unsupported = []
+
+    if not unsupported:
+        validation_begin = end - timedelta(days=7)
+        for batch_no, batch in enumerate(chunked(symbols, 50), start=1):
+            try:
+                _, rejected = fetch_resilient(
+                    batch,
+                    lambda products: fetch_velo_rows(products, int(validation_begin.timestamp() * 1000), end_ms, key),
+                )
+                unsupported.extend(rejected)
+                print(f"Velo universe {batch_no}: {len(batch) - len(rejected)} supported, {len(rejected)} unsupported", flush=True)
+            except Exception as exc:
+                errors.append({"stage": "velo_universe", "symbols": batch, "error": str(exc)})
+        universe_cache.write_text(json.dumps({"unsupported": unsupported}, separators=(",", ":")), encoding="utf-8")
+
+    unsupported_set = set(unsupported)
+    velo_symbols = [symbol for symbol in symbols if symbol not in unsupported_set]
+    # This REST entitlement only exposes the latest 90 days. Velo rows are
+    # appended after Binance rows so timestamp deduplication prefers Velo.
+    recent_begin = end - timedelta(days=89)
+    batch_size = max(1, VALUE_LIMIT // (89 * len(COLUMNS)))
+    scale_mismatches = []
+    for request_no, batch in enumerate(chunked(velo_symbols, batch_size), start=1):
+        try:
+            fetched = fetch_velo_rows(batch, int(recent_begin.timestamp() * 1000), end_ms, key)
+            fetched_by_symbol = {}
+            for row in fetched:
+                fetched_by_symbol.setdefault(row.get("product"), []).append(row)
+            for product, product_rows in fetched_by_symbol.items():
+                if product in rows_by_symbol and scale_compatible(rows_by_symbol[product], product_rows):
+                    rows_by_symbol[product].extend(product_rows)
+                elif product in rows_by_symbol:
+                    scale_mismatches.append(product)
+            print(f"Velo recent request {request_no}: {len(batch)} symbols, {len(fetched)} rows", flush=True)
+        except Exception as exc:
+            errors.append({"stage": "velo_recent", "symbols": batch, "error": str(exc)})
+            print(f"Velo recent request {request_no} failed: {exc}", flush=True)
+
+    histories = {}
+    for symbol, rows in rows_by_symbol.items():
+        series = compute_series(rows, window=window)
+        histories[symbol] = series
+        (histories_dir / f"{symbol}.json").write_text(json.dumps(series, separators=(",", ":")), encoding="utf-8")
+    snapshot = build_snapshot(histories)
+    generated = datetime.now(timezone.utc).isoformat()
+    payload = {
+        "meta": {
+            "generated_at": generated,
+            "source": "Binance native history + Velo latest 89 days",
+            "window_days": window,
+            "history_days_requested": history_days,
+            "universe": "Current Binance spot USDT pairs",
+            "symbols": len(symbols),
+            "velo_supported_symbols": len(velo_symbols),
+            "velo_unsupported_symbols": unsupported,
+            "velo_scale_mismatches": sorted(set(scale_mismatches)),
+            "batch_size": batch_size,
+            "errors": errors,
+        },
+        "rows": snapshot,
+    }
+    (output_dir / "scanner.json").write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+    return payload
