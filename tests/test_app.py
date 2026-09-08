@@ -3,6 +3,7 @@ import tempfile
 import threading
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -149,6 +150,29 @@ class ActionQueueEndpointTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.code, 403)
         self.assertFalse(called.is_set())
+
+    def test_unicode_alphanumeric_binance_chart_symbol_is_served_safely(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data = Path(directory)
+            history = data / "history"
+            history.mkdir()
+            (history / "币安人生USDT.json").write_text('[{"time":"2026-01-01"}]', encoding="utf-8")
+            original_data = app.DATA
+            app.DATA = data
+            server = app.ThreadingHTTPServer(("127.0.0.1", 0), app.Handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                encoded = urllib.parse.quote("币安人生USDT")
+                status, payload = self.request(server, f"/api/chart/{encoded}")
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+                app.DATA = original_data
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload[0]["time"], "2026-01-01")
 
 
 if __name__ == "__main__":

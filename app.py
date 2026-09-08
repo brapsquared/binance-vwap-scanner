@@ -4,21 +4,20 @@ import argparse
 import json
 import math
 import mimetypes
-import re
 import threading
 from datetime import datetime, timezone
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from alert_store import AlertStore
 from lifecycle import build_action_queue
-from scanner import refresh
+from scanner import is_safe_symbol_name, refresh
 
 ROOT = Path(__file__).resolve().parent
 STATIC = ROOT / "static"
 DATA = ROOT / "data"
-SYMBOL = re.compile(r"^[A-Z0-9]+USDT$")
+
 REFRESH_LOCK = threading.Lock()
 REFRESH_STATE = {"running": False, "started_at": None, "finished_at": None, "error": None}
 
@@ -112,8 +111,8 @@ class Handler(SimpleHTTPRequestHandler):
             items = build_action_queue(rows, events, as_of=as_of, **filters)
             return self.send_json({"as_of": as_of, "count": len(items), "filters": filters, "items": items})
         if path.startswith("/api/chart/"):
-            symbol = path.rsplit("/", 1)[-1].upper()
-            if not SYMBOL.fullmatch(symbol):
+            symbol = unquote(path.rsplit("/", 1)[-1]).upper()
+            if not is_safe_symbol_name(symbol):
                 return self.send_error(400, "Invalid symbol")
             return self.send_file(DATA / "history" / f"{symbol}.json", "application/json")
         if path == "/" or path == "/index.html":

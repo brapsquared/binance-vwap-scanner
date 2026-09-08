@@ -89,6 +89,7 @@ class RollingVwapTests(unittest.TestCase):
         spot = {"symbols": [
             {"symbol": "PEPEUSDT", "baseAsset": "PEPE", "quoteAsset": "USDT", "status": "TRADING", "isSpotTradingAllowed": True},
             {"symbol": "BTCUSDT", "baseAsset": "BTC", "quoteAsset": "USDT", "status": "TRADING", "isSpotTradingAllowed": True},
+            {"symbol": "币安人生USDT", "baseAsset": "币安人生", "quoteAsset": "USDT", "status": "TRADING", "isSpotTradingAllowed": True},
         ]}
         futures = {"symbols": [
             {"symbol": "BTCUSDT", "baseAsset": "BTC", "quoteAsset": "USDT", "status": "TRADING", "contractType": "PERPETUAL", "underlyingType": "COIN"},
@@ -106,6 +107,7 @@ class RollingVwapTests(unittest.TestCase):
         self.assertEqual(universe["HYPEUSDT"]["market_label"], "Perp-only")
         self.assertEqual(universe["HYPEUSDT"]["instrument_type"], "perpetual")
         self.assertTrue(universe["HYPEUSDT"]["is_perp_only"])
+        self.assertEqual(universe["币安人生USDT"]["market_type"], "spot")
         self.assertNotIn("1000PEPEUSDT", universe)
         self.assertNotIn("BTCDOMUSDT", universe)
         self.assertNotIn("../../package.jsonUSDT", universe)

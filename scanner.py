@@ -32,6 +32,10 @@ COLUMNS = ("close_price", "coin_volume", "dollar_volume")
 MODEL_PATH = Path(__file__).resolve().parent / "models" / "trend_probability.json"
 
 
+def is_safe_symbol_name(symbol: object) -> bool:
+    return isinstance(symbol, str) and symbol.endswith("USDT") and symbol.isalnum()
+
+
 def enrich_lifecycle_metadata(
     rows: list[dict],
     histories: dict[str, list[dict]],
@@ -231,11 +235,9 @@ def build_market_universe(spot_payload: dict, futures_payload: dict) -> dict[str
         symbol = row.get("symbol")
         base = row.get("baseAsset")
         return (
-            isinstance(symbol, str)
+            is_safe_symbol_name(symbol)
             and isinstance(base, str)
             and symbol == f"{base}USDT"
-            and symbol.isascii()
-            and symbol.isalnum()
         )
 
     spot_rows = [
