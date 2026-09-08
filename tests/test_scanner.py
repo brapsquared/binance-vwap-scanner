@@ -7,6 +7,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 
 from scanner import (
+    build_market_universe,
     build_snapshot,
     chunked,
     compute_multi_series,
@@ -82,6 +83,23 @@ class RollingVwapTests(unittest.TestCase):
         raw = [[1704067200000, "9", "12", "8", "11", "100", 0, "1050"]]
         rows = normalize_binance_klines("AAAUSDT", raw)
         self.assertEqual(rows, [{"product": "AAAUSDT", "time": "1704067200000", "close_price": "11", "coin_volume": "100", "dollar_volume": "1050"}])
+
+    def test_market_universe_prefers_spot_and_adds_only_unique_coin_perps(self):
+        spot = {"symbols": [
+            {"symbol": "PEPEUSDT", "baseAsset": "PEPE", "quoteAsset": "USDT", "status": "TRADING", "isSpotTradingAllowed": True},
+            {"symbol": "BTCUSDT", "baseAsset": "BTC", "quoteAsset": "USDT", "status": "TRADING", "isSpotTradingAllowed": True},
+        ]}
+        futures = {"symbols": [
+            {"symbol": "BTCUSDT", "baseAsset": "BTC", "quoteAsset": "USDT", "status": "TRADING", "contractType": "PERPETUAL", "underlyingType": "COIN"},
+            {"symbol": "1000PEPEUSDT", "baseAsset": "1000PEPE", "quoteAsset": "USDT", "status": "TRADING", "contractType": "PERPETUAL", "underlyingType": "COIN"},
+            {"symbol": "HYPEUSDT", "baseAsset": "HYPE", "quoteAsset": "USDT", "status": "TRADING", "contractType": "PERPETUAL", "underlyingType": "COIN"},
+            {"symbol": "BTCDOMUSDT", "baseAsset": "BTCDOM", "quoteAsset": "USDT", "status": "TRADING", "contractType": "PERPETUAL", "underlyingType": "INDEX"},
+        ]}
+        universe = build_market_universe(spot, futures)
+        self.assertEqual(universe["BTCUSDT"]["market_type"], "spot")
+        self.assertEqual(universe["HYPEUSDT"]["market_type"], "perp")
+        self.assertNotIn("1000PEPEUSDT", universe)
+        self.assertNotIn("BTCDOMUSDT", universe)
 
     def test_scale_guard_rejects_provider_unit_mismatch(self):
         binance = [{"time": "1", "close_price": "0.00001"}]

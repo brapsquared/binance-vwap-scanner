@@ -87,7 +87,7 @@ def empirical_probability(wins: int, samples: int, prior_wins: int = 10, prior_s
     return (wins + prior_wins) / (samples + prior_samples)
 
 
-def _discussion(symbol: str, state: dict, probability, samples) -> dict:
+def _discussion(symbol: str, state: dict, probability, samples, market_type: str = "spot") -> dict:
     score = state["trend_score"]
     alert = state.get("alert_label")
     direction = state.get("alert_direction") or state.get("direction")
@@ -116,6 +116,8 @@ def _discussion(symbol: str, state: dict, probability, samples) -> dict:
             "There is not yet a sufficiently populated historical probability bucket for this state."
         )
         body = f"The four comparison layers produce a trend score of {score:+d}/4, a {structural} structure that has {movement} by {abs(delta)} points over five days. {gap_text} {alert_text} {probability_text} This is a state alert, not an entry or exit instruction."
+    if market_type == "perp":
+        body += " This is a Binance USDⓈ-M perpetual-only market; the displayed probability is transferred from the spot-trained calibration and should be treated as lower confidence until a dedicated perps calibration is completed."
     return {"headline": headline, "body": body}
 
 
@@ -135,7 +137,8 @@ def enrich_live_signals(rows: list[dict], histories: dict[str, list[dict]], mode
         row["continuation_probability"] = probability
         row["probability_samples"] = samples
         row["probability_horizon_days"] = model.get("horizon_days", 20)
-        row["signal_discussion"] = _discussion(row["symbol"], state, probability, samples)
+        row["probability_model_scope"] = "spot-trained transfer" if row.get("market_type") == "perp" else "spot-trained"
+        row["signal_discussion"] = _discussion(row["symbol"], state, probability, samples, row.get("market_type", "spot"))
         if state.get("alert_type"):
             alert = {
                 "id": f"{row['symbol']}:{row.get('as_of')}:{state['alert_type']}",

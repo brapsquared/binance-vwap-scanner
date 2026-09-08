@@ -21,6 +21,7 @@ from signals import enrich_live_signals
 
 VELO_BASE = "https://api.velo.xyz"
 BINANCE_INFO = "https://api.binance.com/api/v3/exchangeInfo"
+BINANCE_FUTURES_INFO = "https://fapi.binance.com/fapi/v1/exchangeInfo"
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36"
 WINDOW_DAYS = 365
 VWAP_WINDOWS = (7, 30, 90, 365)
@@ -175,7 +176,37 @@ def _open_json(url: str, headers: dict | None = None, attempts: int = 3):
     raise RuntimeError(f"Request failed: {url}: {last_error}")
 
 
+def build_market_universe(spot_payload: dict, futures_payload: dict) -> dict[str, dict]:
+    spot_rows = [
+        row for row in spot_payload.get("symbols", [])
+        if row.get("status") == "TRADING" and row.get("quoteAsset") == "USDT" and row.get("isSpotTradingAllowed", True)
+    ]
+    spot_bases = {row["baseAsset"] for row in spot_rows}
+    universe = {
+        row["symbol"]: {"symbol": row["symbol"], "base_asset": row["baseAsset"], "market_type": "spot"}
+        for row in spot_rows
+    }
+    for row in futures_payload.get("symbols", []):
+        if not (row.get("status") == "TRADING" and row.get("quoteAsset") == "USDT" and row.get("contractType") == "PERPETUAL" and row.get("underlyingType") == "COIN"):
+            continue
+        base = row["baseAsset"]
+        canonical = base
+        for prefix in ("1000000", "1000"):
+            if base.startswith(prefix) and base[len(prefix):] in spot_bases:
+                canonical = base[len(prefix):]
+                break
+        if canonical in spot_bases:
+            continue
+        universe.setdefault(row["symbol"], {"symbol": row["symbol"], "base_asset": base, "market_type": "perp"})
+    return dict(sorted(universe.items()))
+
+
+def get_binance_market_universe() -> dict[str, dict]:
+    return build_market_universe(_open_json(BINANCE_INFO), _open_json(BINANCE_FUTURES_INFO))
+
+
 def get_binance_usdt_symbols() -> list[str]:
+    """Backward-compatible spot symbol discovery."""
     payload = _open_json(BINANCE_INFO)
     return sorted({item["symbol"] for item in payload.get("symbols", []) if item.get("status") == "TRADING" and item.get("quoteAsset") == "USDT" and item.get("isSpotTradingAllowed", True)})
 
@@ -199,14 +230,17 @@ def scale_compatible(primary_rows: Sequence[dict], overlay_rows: Sequence[dict],
     return 1 / max_ratio <= ratio <= max_ratio
 
 
-def fetch_binance_klines(symbol: str, end_ms: int, limit: int) -> list[dict]:
+def fetch_binance_klines(symbol: str, end_ms: int, limit: int, market_type: str = "spot") -> list[dict]:
     params = urllib.parse.urlencode({"symbol": symbol, "interval": "1d", "endTime": end_ms, "limit": min(limit, 1000)})
-    return normalize_binance_klines(symbol, _open_json(f"https://api.binance.com/api/v3/klines?{params}"))
+    base = "https://fapi.binance.com/fapi/v1/klines" if market_type == "perp" else "https://api.binance.com/api/v3/klines"
+    return normalize_binance_klines(symbol, _open_json(f"{base}?{params}"))
 
 
-def fetch_velo_rows(products: Sequence[str], begin_ms: int, end_ms: int, key: str) -> list[dict]:
+def fetch_velo_rows(products: Sequence[str], begin_ms: int, end_ms: int, key: str, market_type: str = "spot") -> list[dict]:
     params = urllib.parse.urlencode({
-        "type": "spot", "exchanges": "binance", "products": ",".join(products),
+        "type": "futures" if market_type == "perp" else "spot",
+        "exchanges": "binance-futures" if market_type == "perp" else "binance",
+        "products": ",".join(products),
         "columns": ",".join(COLUMNS), "begin": begin_ms, "end": end_ms, "resolution": 1440,
     })
     auth = base64.b64encode(f"api:{key}".encode()).decode()
@@ -254,7 +288,8 @@ def refresh(output_dir: Path, history_days: int = HISTORY_DAYS, window: int = WI
     histories_dir = output_dir / "history"
     histories_dir.mkdir(exist_ok=True)
     key = load_velo_key()
-    symbols = get_binance_usdt_symbols()
+    universe = get_binance_market_universe()
+    symbols = list(universe)
     # Only completed UTC daily candles count toward the rolling window.
     end = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     end_ms = int(end.timestamp() * 1000) - 1
@@ -264,7 +299,10 @@ def refresh(output_dir: Path, history_days: int = HISTORY_DAYS, window: int = WI
     # Exchange-native history is the complete backfill source. One request per
     # symbol covers the whole retained chart window.
     with ThreadPoolExecutor(max_workers=8) as pool:
-        futures = {pool.submit(fetch_binance_klines, symbol, end_ms, history_days + 2): symbol for symbol in symbols}
+        futures = {
+            pool.submit(fetch_binance_klines, symbol, end_ms, history_days + 2, universe[symbol]["market_type"]): symbol
+            for symbol in symbols
+        }
         completed = 0
         for future in as_completed(futures):
             symbol = futures[future]
@@ -276,62 +314,64 @@ def refresh(output_dir: Path, history_days: int = HISTORY_DAYS, window: int = WI
             if completed % 50 == 0 or completed == len(symbols):
                 print(f"Binance history: {completed}/{len(symbols)} symbols", flush=True)
 
-    # Reuse the prior Velo universe discovery if present; product membership
-    # changes slowly and re-isolating every unsupported symbol is expensive.
-    universe_cache = output_dir / "velo_universe.json"
-    unsupported = []
-    if universe_cache.exists():
-        cached = json.loads(universe_cache.read_text(encoding="utf-8"))
-        unsupported = [symbol for symbol in cached.get("unsupported", []) if symbol in symbols]
-    elif (output_dir / "scanner.json").exists():
-        try:
-            previous = json.loads((output_dir / "scanner.json").read_text(encoding="utf-8"))
-            unsupported = [symbol for symbol in previous.get("meta", {}).get("velo_unsupported_symbols", []) if symbol in symbols]
-        except (OSError, json.JSONDecodeError):
+    # Velo product support is validated and cached independently for spot and perps.
+    validation_begin = end - timedelta(days=7)
+    unsupported_by_type = {}
+    for market_type in ("spot", "perp"):
+        typed_symbols = [symbol for symbol in symbols if universe[symbol]["market_type"] == market_type]
+        cache_name = "velo_universe.json" if market_type == "spot" else "velo_universe_perp.json"
+        universe_cache = output_dir / cache_name
+        if universe_cache.exists():
+            cached = json.loads(universe_cache.read_text(encoding="utf-8"))
+            unsupported = [symbol for symbol in cached.get("unsupported", []) if symbol in typed_symbols]
+        else:
             unsupported = []
+            for batch_no, batch in enumerate(chunked(typed_symbols, 50), start=1):
+                try:
+                    _, rejected = fetch_resilient(
+                        batch,
+                        lambda products, kind=market_type: fetch_velo_rows(products, int(validation_begin.timestamp() * 1000), end_ms, key, kind),
+                    )
+                    unsupported.extend(rejected)
+                    print(f"Velo {market_type} universe {batch_no}: {len(batch) - len(rejected)} supported, {len(rejected)} unsupported", flush=True)
+                except Exception as exc:
+                    errors.append({"stage": f"velo_{market_type}_universe", "symbols": batch, "error": str(exc)})
+            universe_cache.write_text(json.dumps({"unsupported": unsupported}, separators=(",", ":")), encoding="utf-8")
+        unsupported_by_type[market_type] = unsupported
 
-    if not unsupported:
-        validation_begin = end - timedelta(days=7)
-        for batch_no, batch in enumerate(chunked(symbols, 50), start=1):
-            try:
-                _, rejected = fetch_resilient(
-                    batch,
-                    lambda products: fetch_velo_rows(products, int(validation_begin.timestamp() * 1000), end_ms, key),
-                )
-                unsupported.extend(rejected)
-                print(f"Velo universe {batch_no}: {len(batch) - len(rejected)} supported, {len(rejected)} unsupported", flush=True)
-            except Exception as exc:
-                errors.append({"stage": "velo_universe", "symbols": batch, "error": str(exc)})
-        universe_cache.write_text(json.dumps({"unsupported": unsupported}, separators=(",", ":")), encoding="utf-8")
-
-    unsupported_set = set(unsupported)
-    velo_symbols = [symbol for symbol in symbols if symbol not in unsupported_set]
-    # This REST entitlement only exposes the latest 90 days. Velo rows are
-    # appended after Binance rows so timestamp deduplication prefers Velo.
+    # This REST entitlement exposes the latest 90 days. Append Velo after
+    # Binance so timestamp deduplication prefers the normalized provider row.
     recent_begin = end - timedelta(days=89)
     batch_size = max(1, VALUE_LIMIT // (89 * len(COLUMNS)))
     scale_mismatches = []
     velo_coin_by_product = {}
-    for request_no, batch in enumerate(chunked(velo_symbols, batch_size), start=1):
-        try:
-            fetched = fetch_velo_rows(batch, int(recent_begin.timestamp() * 1000), end_ms, key)
-            fetched_by_symbol = {}
-            for row in fetched:
-                product = row.get("product")
-                fetched_by_symbol.setdefault(product, []).append(row)
-                if product and row.get("coin"):
-                    velo_coin_by_product[product] = row["coin"]
-            for product, product_rows in fetched_by_symbol.items():
-                if product in rows_by_symbol and scale_compatible(rows_by_symbol[product], product_rows):
-                    rows_by_symbol[product].extend(product_rows)
-                elif product in rows_by_symbol:
-                    scale_mismatches.append(product)
-            print(f"Velo recent request {request_no}: {len(batch)} symbols, {len(fetched)} rows", flush=True)
-        except Exception as exc:
-            errors.append({"stage": "velo_recent", "symbols": batch, "error": str(exc)})
-            print(f"Velo recent request {request_no} failed: {exc}", flush=True)
+    velo_symbols = []
+    for market_type in ("spot", "perp"):
+        unsupported_set = set(unsupported_by_type[market_type])
+        typed_symbols = [symbol for symbol in symbols if universe[symbol]["market_type"] == market_type and symbol not in unsupported_set]
+        velo_symbols.extend(typed_symbols)
+        for request_no, batch in enumerate(chunked(typed_symbols, batch_size), start=1):
+            try:
+                fetched = fetch_velo_rows(batch, int(recent_begin.timestamp() * 1000), end_ms, key, market_type)
+                fetched_by_symbol = {}
+                for row in fetched:
+                    product = row.get("product")
+                    fetched_by_symbol.setdefault(product, []).append(row)
+                    if product and row.get("coin"):
+                        velo_coin_by_product[product] = row["coin"]
+                for product, product_rows in fetched_by_symbol.items():
+                    if product in rows_by_symbol and scale_compatible(rows_by_symbol[product], product_rows):
+                        rows_by_symbol[product].extend(product_rows)
+                    elif product in rows_by_symbol:
+                        scale_mismatches.append(product)
+                print(f"Velo {market_type} recent request {request_no}: {len(batch)} symbols, {len(fetched)} rows", flush=True)
+            except Exception as exc:
+                errors.append({"stage": f"velo_{market_type}_recent", "symbols": batch, "error": str(exc)})
+                print(f"Velo {market_type} recent request {request_no} failed: {exc}", flush=True)
 
-    coin_by_product = {symbol: velo_coin_by_product.get(symbol, symbol.removesuffix("USDT")) for symbol in symbols}
+    unsupported = sorted(set(unsupported_by_type["spot"] + unsupported_by_type["perp"]))
+
+    coin_by_product = {symbol: velo_coin_by_product.get(symbol, universe[symbol]["base_asset"]) for symbol in symbols}
     cap_rows = []
     cap_rejected = []
     cap_coins = sorted(set(coin_by_product.values()))
@@ -352,6 +392,7 @@ def refresh(output_dir: Path, history_days: int = HISTORY_DAYS, window: int = WI
         (histories_dir / f"{symbol}.json").write_text(json.dumps(series, separators=(",", ":")), encoding="utf-8")
     snapshot = build_snapshot(histories, windows=VWAP_WINDOWS)
     for row in snapshot:
+        row.update(universe[row["symbol"]])
         row["liquidity_30d"] = trailing_median_quote_volume(rows_by_symbol.get(row["symbol"], []), days=30)
     snapshot = enrich_market_caps(snapshot, coin_by_product, cap_rows)
     model = json.loads(MODEL_PATH.read_text(encoding="utf-8")) if MODEL_PATH.exists() else {"groups": {}}
@@ -362,11 +403,13 @@ def refresh(output_dir: Path, history_days: int = HISTORY_DAYS, window: int = WI
     payload = {
         "meta": {
             "generated_at": generated,
-            "source": "Binance native history + Velo latest 89 days",
+            "source": "Binance spot/perpetual native history + Velo latest 89 days",
             "window_days": window,
             "history_days_requested": history_days,
-            "universe": "Current Binance spot USDT pairs",
+            "universe": "Current Binance USDT spot plus coin-underlying perp-only markets",
             "symbols": len(symbols),
+            "spot_symbols": sum(1 for item in universe.values() if item["market_type"] == "spot"),
+            "perp_only_symbols": sum(1 for item in universe.values() if item["market_type"] == "perp"),
             "velo_supported_symbols": len(velo_symbols),
             "velo_unsupported_symbols": unsupported,
             "velo_scale_mismatches": sorted(set(scale_mismatches)),

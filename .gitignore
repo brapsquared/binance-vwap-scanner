@@ -3,6 +3,11 @@ __pycache__/
 data/
 .venv/
 node_modules/
+.env
+.env.*
+*.db
+*.sqlite
+*.sqlite3
 spikes/001-mtf-vwap-study/data/
 spikes/001-mtf-vwap-study/results/events*.csv
 spikes/001-mtf-vwap-study/results/short_cross_trade_sensitivity.csv
