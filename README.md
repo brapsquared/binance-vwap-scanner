@@ -35,7 +35,7 @@ python scheduled_runner.py
 
 It refreshes completed-candle data, atomically claims new accepted alert IDs, and prints a probability-ranked digest to stdout. It prints **nothing** when no alert is newly deliverable, which makes it suitable for a script-only Hermes cron job. Delivery state is stored locally in ignored `data/advisory-deliveries.db`; no credentials are written to the repository. See [`docs/SCHEDULED_ADVISORY_RUNNER.md`](docs/SCHEDULED_ADVISORY_RUNNER.md) for scheduling and delivery details.
 
-The detail panel uses the locally bundled, Apache-2.0 licensed TradingView Lightweight Charts 5.2.1. It supports native wheel/pinch zoom, drag-to-pan, crosshair inspection, responsive resizing, and 1Y/2Y/All range controls without an API key or CDN dependency.
+The detail panel uses the locally bundled, Apache-2.0 licensed TradingView Lightweight Charts 5.2.1. It supports native wheel/pinch zoom, drag-to-pan, crosshair inspection, responsive resizing, and 1Y/2Y/All range controls without an API key or CDN dependency. Close is always plotted; 7D, 30D, 90D, and 365D VWAPs can be toggled independently or together with the All control. Chart-series visibility persists locally across tickers and sessions, and the crosshair tooltip includes only enabled VWAPs.
 
 > Why hybrid data? The configured Velo REST entitlement rejects starts older than 90 days. Binance-native klines provide the required 365-day backfill; Velo remains the preferred recent-data layer and overrides matching dates.
 

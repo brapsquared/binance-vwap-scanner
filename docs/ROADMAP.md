@@ -24,7 +24,8 @@
 
 ### Ticker investigation
 
-- [ ] Optional toggles for all four VWAP lines and volume on one chart
+- [x] Independent toggles for all four VWAP lines on one chart
+- [ ] Optional volume series on the ticker chart
 - [ ] Exact historical outcome panel: 5D/10D/20D hit rates, median move, MFE, and MAE
 - [ ] BTC regime, relative strength, sector peers, and market-wide breadth context
 - [ ] Alert probability history and local trend sparkline

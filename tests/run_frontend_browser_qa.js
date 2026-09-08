@@ -71,6 +71,8 @@ async function main() {
     detailText: document.querySelector('#detail').textContent,
     perpTagged: document.querySelector('#rows [data-symbol="BETAUSDT"] .market-kind')?.textContent,
     chartPresent: !!document.querySelector('#chart canvas'),
+    vwapControls: [...document.querySelectorAll('#vwapToggles [data-vwap]')].map(button => button.dataset.vwap),
+    activeVwaps: [...document.querySelectorAll('#vwapToggles [data-vwap].active')].map(button => button.dataset.vwap),
   }))()`);
   assert(desktop.queueVisible && desktop.scannerHidden, 'Action Queue view did not replace scanner controls');
   assert(desktop.queueRows.join(',') === 'ALPHAUSDT,BETAUSDT', `unexpected queue order: ${desktop.queueRows}`);
@@ -79,6 +81,42 @@ async function main() {
   assert(desktop.chartPresent, 'existing chart did not render');
   assert(desktop.headerMeta.includes('2 active') && desktop.headerMeta.includes('2 queue'), `header counts are not actionable: ${desktop.headerMeta}`);
   assert(desktop.detailText.includes('10D continuation'), 'ticker detail ignores the model probability horizon');
+  assert(desktop.vwapControls.join(',') === '7,30,90,365,all', `unexpected VWAP controls: ${desktop.vwapControls}`);
+  assert(desktop.activeVwaps.join(',') === '365', `selected VWAP is not the default chart series: ${desktop.activeVwaps}`);
+
+  await evaluate(`state.chart.timeScale().setVisibleLogicalRange({from:5,to:15})`);
+  await wait(200);
+  const rangeBeforeToggle = await evaluate(`state.chart.timeScale().getVisibleLogicalRange()`);
+  assert(Math.abs(rangeBeforeToggle.from-5)<0.01&&Math.abs(rangeBeforeToggle.to-15)<0.01,`browser did not establish the pan/zoom test range: ${JSON.stringify(rangeBeforeToggle)}`);
+  await evaluate(`document.querySelector('#vwapToggles [data-vwap="7"]').click()`);
+  await wait(300);
+  const rangeAfterToggle = await evaluate(`state.chart.timeScale().getVisibleLogicalRange()`);
+  assert(Math.abs(rangeAfterToggle.from-rangeBeforeToggle.from)<0.01&&Math.abs(rangeAfterToggle.to-rangeBeforeToggle.to)<0.01,`VWAP toggle reset pan/zoom: ${JSON.stringify({rangeBeforeToggle,rangeAfterToggle})}`);
+  await evaluate(`document.querySelector('#vwapToggles [data-vwap="7"]').click()`);
+  await wait(300);
+
+  await evaluate(`document.querySelector('#vwapToggles [data-vwap="all"]').click()`);
+  await wait(300);
+  const allVwaps = await evaluate(`(() => ({
+    active: [...document.querySelectorAll('#vwapToggles [data-vwap].active')].map(button => button.dataset.vwap),
+    saved: JSON.parse(localStorage.getItem('vwap-prefs')).chartVwaps,
+    chartPresent: !!document.querySelector('#chart canvas'),
+  }))()`);
+  assert(allVwaps.active.join(',') === '7,30,90,365,all', `All did not enable every VWAP: ${allVwaps.active}`);
+  assert(allVwaps.saved.join(',') === '7,30,90,365', `VWAP visibility did not persist: ${allVwaps.saved}`);
+  assert(allVwaps.chartPresent, 'chart disappeared after enabling all VWAPs');
+
+  await evaluate(`document.querySelector('#vwapToggles [data-vwap="all"]').click()`);
+  await wait(300);
+  const noVwaps = await evaluate(`(() => ({
+    active: [...document.querySelectorAll('#vwapToggles [data-vwap].active')].map(button => button.dataset.vwap),
+    chartPresent: !!document.querySelector('#chart canvas'),
+  }))()`);
+  assert(noVwaps.active.length === 0, `All did not disable every VWAP: ${noVwaps.active}`);
+  assert(noVwaps.chartPresent, 'Close chart disappeared when all VWAPs were disabled');
+
+  await evaluate(`document.querySelector('#vwapToggles [data-vwap="all"]').click()`);
+  await wait(300);
   const desktopShot = await screenshot('vwap-action-queue-desktop.png');
 
   await evaluate(`document.querySelector('#rows tr[data-symbol="BETAUSDT"]').click()`);
@@ -113,7 +151,7 @@ async function main() {
 
   assert(exceptions.length === 0, `browser exceptions: ${exceptions.join('; ')}`);
   socket.close();
-  console.log(JSON.stringify({ desktop, viewed, filtered, mobile, screenshots: [desktopShot, mobileShot] }, null, 2));
+  console.log(JSON.stringify({ desktop, allVwaps, noVwaps, viewed, filtered, mobile, screenshots: [desktopShot, mobileShot] }, null, 2));
 }
 
 main().catch(error => {

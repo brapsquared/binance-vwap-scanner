@@ -21,6 +21,14 @@ test('ticker detail includes an accessible four-VWAP state map mount', () => {
   assert.match(html, /aria-label="Close to rolling VWAP state map"/);
 });
 
+test('ticker chart exposes independent rolling VWAP controls', () => {
+  assert.match(html, /id="vwapToggles"/);
+  for (const period of ['7', '30', '90', '365', 'all']) {
+    assert.match(html, new RegExp(`data-vwap=["']${period}["']`), `missing ${period} VWAP toggle`);
+  }
+  assert.match(html, /chartVwaps/);
+});
+
 test('inline browser application parses as JavaScript', () => {
   const inlineScripts = [...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)]
     .filter(match => match[1].trim())
