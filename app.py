@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import mimetypes
 import re
 import threading
@@ -11,6 +12,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from alert_store import AlertStore
+from lifecycle import build_action_queue
 from scanner import refresh
 
 ROOT = Path(__file__).resolve().parent
@@ -19,6 +21,32 @@ DATA = ROOT / "data"
 SYMBOL = re.compile(r"^[A-Z0-9]+USDT$")
 REFRESH_LOCK = threading.Lock()
 REFRESH_STATE = {"running": False, "started_at": None, "finished_at": None, "error": None}
+
+
+def parse_action_queue_filters(query: dict[str, list[str]]) -> dict:
+    allowed = {"min_probability", "min_samples", "market_type", "new_only"}
+    if set(query) - allowed or any(len(values) != 1 for values in query.values()):
+        raise ValueError("Unknown or repeated Action Queue filter")
+    probability = float(query.get("min_probability", ["0"])[0])
+    samples = int(query.get("min_samples", ["0"])[0])
+    if not math.isfinite(probability) or not 0 <= probability <= 1:
+        raise ValueError("min_probability must be between 0 and 1")
+    if samples < 0:
+        raise ValueError("min_samples must be a non-negative integer")
+    market_aliases = {"all": "all", "spot": "spot", "perp": "perp", "perp-only": "perp"}
+    raw_market_type = query.get("market_type", ["all"])[0].lower()
+    if raw_market_type not in market_aliases:
+        raise ValueError("market_type must be all, spot, or perp-only")
+    raw_new_only = query.get("new_only", ["false"])[0].lower()
+    boolean_values = {"true": True, "1": True, "false": False, "0": False}
+    if raw_new_only not in boolean_values:
+        raise ValueError("new_only must be true or false")
+    return {
+        "min_probability": probability,
+        "min_samples": samples,
+        "market_type": market_aliases[raw_market_type],
+        "new_only": boolean_values[raw_new_only],
+    }
 
 
 def run_refresh():
@@ -47,6 +75,28 @@ class Handler(SimpleHTTPRequestHandler):
             store = AlertStore(DATA / "alerts.db")
             alerts = store.list(symbol=symbol, alert_type=alert_type)
             return self.send_json({"count": len(alerts), "total": store.count(), "alerts": alerts})
+        if path == "/api/action-queue":
+            try:
+                filters = parse_action_queue_filters(parse_qs(parsed.query, keep_blank_values=True))
+            except ValueError as exc:
+                return self.send_json({"error": str(exc)}, status=400)
+            scanner_path = DATA / "scanner.json"
+            if not scanner_path.exists():
+                return self.send_error(503, "Data not ready. Run: python app.py --refresh")
+            scanner = json.loads(scanner_path.read_text(encoding="utf-8"))
+            rows = scanner.get("rows", [])
+            dates = [row.get("as_of") for row in rows if row.get("as_of")]
+            as_of = max(dates) if dates else None
+            events = (
+                AlertStore(DATA / "alerts.db").list_recent(
+                    as_of=as_of,
+                    symbols=[row["symbol"] for row in rows],
+                )
+                if as_of
+                else []
+            )
+            items = build_action_queue(rows, events, as_of=as_of, **filters)
+            return self.send_json({"as_of": as_of, "count": len(items), "filters": filters, "items": items})
         if path.startswith("/api/chart/"):
             symbol = path.rsplit("/", 1)[-1].upper()
             if not SYMBOL.fullmatch(symbol):
