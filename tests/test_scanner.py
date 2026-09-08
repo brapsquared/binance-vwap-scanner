@@ -120,7 +120,7 @@ class RollingVwapTests(unittest.TestCase):
 
     def test_multi_series_emits_each_requested_rolling_window(self):
         rows = [
-            {"time": str(day), "close_price": str(day), "coin_volume": "1", "dollar_volume": str(day)}
+            {"time": f"2026-01-{day:02d}", "close_price": str(day), "coin_volume": "1", "dollar_volume": str(day)}
             for day in range(1, 11)
         ]
         latest = compute_multi_series(rows, windows=(3, 7))[-1]
@@ -131,6 +131,10 @@ class RollingVwapTests(unittest.TestCase):
         rows = [
             {"time": "2026-01-01", "close_price": "10", "coin_volume": "1", "dollar_volume": "10"},
             {"time": '<img src=x onerror="globalThis.pwned=1">', "close_price": "999", "coin_volume": "1", "dollar_volume": "999"},
+            {"time": "²", "close_price": "999", "coin_volume": "1", "dollar_volume": "999"},
+            {"time": "１２３", "close_price": "999", "coin_volume": "1", "dollar_volume": "999"},
+            {"time": "20261340", "close_price": "999", "coin_volume": "1", "dollar_volume": "999"},
+            {"time": "9" * 5000, "close_price": "999", "coin_volume": "1", "dollar_volume": "999"},
         ]
 
         series = compute_multi_series(rows, windows=(1,))

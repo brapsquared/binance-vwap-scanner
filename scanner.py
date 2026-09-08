@@ -123,14 +123,13 @@ def trailing_median_quote_volume(rows: Sequence[dict], days: int = 30) -> float 
 
 def _normalized_candle_time(raw_time: object) -> str | None:
     text = str(raw_time)
-    if text.isdigit():
-        value = int(text)
-        if value >= 100_000_000_000:
-            try:
-                return datetime.fromtimestamp(value / 1000, tz=timezone.utc).date().isoformat()
-            except (OSError, OverflowError, ValueError):
-                return None
-        return text
+    if len(text) == 13 and text.isascii() and text.isdigit():
+        try:
+            return datetime.fromtimestamp(int(text) / 1000, tz=timezone.utc).date().isoformat()
+        except (OSError, OverflowError, ValueError):
+            return None
+    if len(text) != 10:
+        return None
     try:
         return datetime.strptime(text, "%Y-%m-%d").date().isoformat()
     except ValueError:
