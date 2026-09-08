@@ -1,6 +1,6 @@
 import unittest
 
-from lifecycle import build_action_queue, derive_lifecycle
+from lifecycle import build_action_queue, derive_lifecycle, derive_lifecycle_timeline
 
 
 class LifecycleTests(unittest.TestCase):
@@ -72,6 +72,20 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(state["highest_probability"], 0.68)
         self.assertEqual(state["event_id"], "AAAUSDT:2026-01-20:bullish_flip_confirmed")
         self.assertTrue(state["is_new"])
+
+    def test_timeline_age_resets_after_an_intervening_lifecycle_state(self):
+        timeline = [
+            {"symbol": "AAAUSDT", "as_of": "2026-02-07", "alert_type": None, "direction": "long", "trend_score": 3, "score_change_5d": 1},
+            {"symbol": "AAAUSDT", "as_of": "2026-02-08", "alert_type": None, "direction": "short", "trend_score": -2, "score_change_5d": -2},
+            {"symbol": "AAAUSDT", "as_of": "2026-02-09", "alert_type": None, "direction": "long", "trend_score": 3, "score_change_5d": 1},
+            {"symbol": "AAAUSDT", "as_of": "2026-02-10", "alert_type": None, "direction": "long", "trend_score": 3, "score_change_5d": 1},
+        ]
+
+        state = derive_lifecycle_timeline(timeline, [self.prior_alert()])
+
+        self.assertEqual(state["lifecycle"], "Persisting")
+        self.assertEqual(state["first_seen"], "2026-02-09")
+        self.assertEqual(state["age_days"], 1)
 
     def test_recent_same_direction_alert_moving_toward_zero_is_weakening(self):
         row = {

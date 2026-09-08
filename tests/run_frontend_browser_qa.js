@@ -67,6 +67,8 @@ async function main() {
     queueRows: [...document.querySelectorAll('#rows tr[data-symbol]')].map(row => row.dataset.symbol),
     stateNodes: document.querySelectorAll('#stateMap .state-node').length,
     summary: document.querySelector('#queueSummary').textContent,
+    headerMeta: document.querySelector('#meta').textContent,
+    detailText: document.querySelector('#detail').textContent,
     perpTagged: document.querySelector('#rows [data-symbol="BETAUSDT"] .market-kind')?.textContent,
     chartPresent: !!document.querySelector('#chart canvas'),
   }))()`);
@@ -75,6 +77,8 @@ async function main() {
   assert(desktop.stateNodes === 5, `expected five state-map nodes, got ${desktop.stateNodes}`);
   assert(desktop.perpTagged === 'PERP', 'perp-only market tag is missing');
   assert(desktop.chartPresent, 'existing chart did not render');
+  assert(desktop.headerMeta.includes('2 active') && desktop.headerMeta.includes('2 queue'), `header counts are not actionable: ${desktop.headerMeta}`);
+  assert(desktop.detailText.includes('10D continuation'), 'ticker detail ignores the model probability horizon');
   const desktopShot = await screenshot('vwap-action-queue-desktop.png');
 
   await evaluate(`document.querySelector('#rows tr[data-symbol="BETAUSDT"]').click()`);
@@ -96,13 +100,15 @@ async function main() {
   await wait(300);
   const mobile = await evaluate(`(() => ({
     viewport: [innerWidth, innerHeight],
-    scopeHidden: getComputedStyle(document.querySelector('#queueHead .hide-mobile')).display === 'none',
+    scopeVisible: getComputedStyle(document.querySelector('#queueHead th:last-child')).display !== 'none',
     controlsWidth: Math.round(document.querySelector('#queueControls').getBoundingClientRect().width),
     bodyWidth: document.body.scrollWidth,
+    xssExecuted: globalThis.__vwapXss === 1 || !!document.querySelector('#xss-probe'),
   }))()`);
   assert(mobile.viewport[0] === 390, `mobile viewport did not apply: ${mobile.viewport}`);
-  assert(mobile.scopeHidden, 'mobile queue did not hide compact scope column');
+  assert(mobile.scopeVisible, 'mobile queue hides calibration scope');
   assert(mobile.bodyWidth <= 390, `mobile page overflows horizontally: ${mobile.bodyWidth}px`);
+  assert(!mobile.xssExecuted, 'provider-derived markup executed in the Action Queue');
   const mobileShot = await screenshot('vwap-action-queue-mobile.png');
 
   assert(exceptions.length === 0, `browser exceptions: ${exceptions.join('; ')}`);

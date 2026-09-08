@@ -95,6 +95,7 @@ class RollingVwapTests(unittest.TestCase):
             {"symbol": "1000PEPEUSDT", "baseAsset": "1000PEPE", "quoteAsset": "USDT", "status": "TRADING", "contractType": "PERPETUAL", "underlyingType": "COIN"},
             {"symbol": "HYPEUSDT", "baseAsset": "HYPE", "quoteAsset": "USDT", "status": "TRADING", "contractType": "PERPETUAL", "underlyingType": "COIN"},
             {"symbol": "BTCDOMUSDT", "baseAsset": "BTCDOM", "quoteAsset": "USDT", "status": "TRADING", "contractType": "PERPETUAL", "underlyingType": "INDEX"},
+            {"symbol": "../../package.jsonUSDT", "baseAsset": "../..", "quoteAsset": "USDT", "status": "TRADING", "contractType": "PERPETUAL", "underlyingType": "COIN"},
         ]}
         universe = build_market_universe(spot, futures)
         self.assertEqual(universe["BTCUSDT"]["market_type"], "spot")
@@ -107,6 +108,7 @@ class RollingVwapTests(unittest.TestCase):
         self.assertTrue(universe["HYPEUSDT"]["is_perp_only"])
         self.assertNotIn("1000PEPEUSDT", universe)
         self.assertNotIn("BTCDOMUSDT", universe)
+        self.assertNotIn("../../package.jsonUSDT", universe)
 
     def test_scale_guard_rejects_provider_unit_mismatch(self):
         binance = [{"time": "1", "close_price": "0.00001"}]

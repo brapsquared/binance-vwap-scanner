@@ -17,7 +17,8 @@ from pathlib import Path
 from typing import Iterable, Iterator, Sequence
 
 from alert_store import AlertStore
-from signals import enrich_live_signals
+from lifecycle import derive_lifecycle_timeline
+from signals import classify_series, enrich_live_signals
 
 VELO_BASE = "https://api.velo.xyz"
 BINANCE_INFO = "https://api.binance.com/api/v3/exchangeInfo"
@@ -29,6 +30,44 @@ HISTORY_DAYS = 455
 VALUE_LIMIT = 22_500
 COLUMNS = ("close_price", "coin_volume", "dollar_volume")
 MODEL_PATH = Path(__file__).resolve().parent / "models" / "trend_probability.json"
+
+
+def enrich_lifecycle_metadata(
+    rows: list[dict],
+    histories: dict[str, list[dict]],
+    alert_events: list[dict],
+    lookback_days: int = 45,
+) -> list[dict]:
+    events_by_symbol: dict[str, list[dict]] = {}
+    for event in alert_events:
+        events_by_symbol.setdefault(event["symbol"], []).append(event)
+    for row in rows:
+        series = histories.get(row["symbol"], [])
+        start = max(0, len(series) - lookback_days - 1)
+        timeline = []
+        for index in range(start, len(series)):
+            point = series[index]
+            if index == len(series) - 1:
+                state_row = dict(row)
+            else:
+                state_row = {
+                    "symbol": row["symbol"],
+                    "as_of": point["time"],
+                    **classify_series(series[:index + 1]),
+                }
+            timeline.append(state_row)
+        lifecycle = derive_lifecycle_timeline(
+            timeline,
+            events_by_symbol.get(row["symbol"], []),
+        )
+        row.update({
+            "lifecycle_state": lifecycle["lifecycle"],
+            "lifecycle_first_seen": lifecycle["first_seen"],
+            "lifecycle_days": lifecycle["age_days"],
+            "lifecycle_highest_probability": lifecycle["highest_probability"],
+            "action_queue_id": lifecycle["action_queue_id"],
+        })
+    return rows
 
 
 def chunked(items: Sequence[str], size: int) -> Iterator[list[str]]:
@@ -188,9 +227,20 @@ def _open_json(url: str, headers: dict | None = None, attempts: int = 3):
 
 
 def build_market_universe(spot_payload: dict, futures_payload: dict) -> dict[str, dict]:
+    def valid_usdt_market(row: dict) -> bool:
+        symbol = row.get("symbol")
+        base = row.get("baseAsset")
+        return (
+            isinstance(symbol, str)
+            and isinstance(base, str)
+            and symbol == f"{base}USDT"
+            and symbol.isascii()
+            and symbol.isalnum()
+        )
+
     spot_rows = [
         row for row in spot_payload.get("symbols", [])
-        if row.get("status") == "TRADING" and row.get("quoteAsset") == "USDT" and row.get("isSpotTradingAllowed", True)
+        if valid_usdt_market(row) and row.get("status") == "TRADING" and row.get("quoteAsset") == "USDT" and row.get("isSpotTradingAllowed", True)
     ]
     spot_bases = {row["baseAsset"] for row in spot_rows}
     universe = {
@@ -202,7 +252,7 @@ def build_market_universe(spot_payload: dict, futures_payload: dict) -> dict[str
         for row in spot_rows
     }
     for row in futures_payload.get("symbols", []):
-        if not (row.get("status") == "TRADING" and row.get("quoteAsset") == "USDT" and row.get("contractType") == "PERPETUAL" and row.get("underlyingType") == "COIN"):
+        if not (valid_usdt_market(row) and row.get("status") == "TRADING" and row.get("quoteAsset") == "USDT" and row.get("contractType") == "PERPETUAL" and row.get("underlyingType") == "COIN"):
             continue
         base = row["baseAsset"]
         canonical = base
@@ -418,6 +468,9 @@ def refresh(output_dir: Path, history_days: int = HISTORY_DAYS, window: int = WI
     snapshot, alert_candidates = enrich_live_signals(snapshot, histories, model)
     alert_store = AlertStore(output_dir / "alerts.db")
     alerts = alert_store.record(alert_candidates, cooldown_days=10)
+    scanner_as_of = max((row["as_of"] for row in snapshot if row.get("as_of")), default=None)
+    recent_events = alert_store.list_recent(as_of=scanner_as_of, symbols=symbols) if scanner_as_of else []
+    snapshot = enrich_lifecycle_metadata(snapshot, histories, recent_events)
     generated = datetime.now(timezone.utc).isoformat()
     payload = {
         "meta": {

@@ -123,6 +123,33 @@ class ActionQueueEndpointTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, 400)
         self.assertIn("min_probability", payload["error"])
 
+    def test_cross_origin_refresh_is_rejected_without_starting_work(self):
+        called = threading.Event()
+        original_run_refresh = app.run_refresh
+        app.run_refresh = called.set
+        server = app.ThreadingHTTPServer(("127.0.0.1", 0), app.Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{server.server_address[1]}/api/refresh",
+                method="POST",
+                headers={"Origin": "https://attacker.example"},
+            )
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                urllib.request.urlopen(request, timeout=5)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+            app.run_refresh = original_run_refresh
+            if called.wait(1) and app.REFRESH_LOCK.locked():
+                app.REFRESH_LOCK.release()
+            app.REFRESH_STATE["running"] = False
+
+        self.assertEqual(raised.exception.code, 403)
+        self.assertFalse(called.is_set())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -19,6 +19,30 @@
     return normalized ? normalized[0].toUpperCase() + normalized.slice(1) : '';
   }
 
+  function escapeHTML(value) {
+    return String(value ?? '').replace(/[&<>"']/g, character => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    })[character]);
+  }
+
+  function notificationCopy(alert, row = {}, defaultHorizon = 20) {
+    const alertProbability = finite(alert.probability ?? alert.continuation_probability);
+    const horizon = finite(row.probability_horizon_days ?? alert.probability_horizon_days) || defaultHorizon;
+    const sampleCount = finite(alert.samples ?? alert.probability_samples) || 0;
+    const direction = alert.direction || alert.alert_direction || row.alert_direction || row.direction || 'directional';
+    const marketType = row.market_type === 'perp' ? 'perp-only' : row.market_type === 'spot' ? 'spot' : 'market unclassified';
+    const scope = row.probability_model_scope || alert.probability_model_scope || (row.market_type === 'perp' ? 'spot-trained transfer' : 'spot-trained');
+    const probabilityText = alertProbability === null
+      ? `Probability unavailable for empirical ${horizon}D ${direction} continuation association`
+      : `${Math.round(alertProbability * 100)}% empirical ${horizon}D ${direction} continuation association`;
+    const confidence = row.market_type === 'perp' || String(scope).includes('transfer') ? ' · lower confidence' : '';
+    return {
+      title: `${alert.label || 'VWAP alert'} · ${String(alert.symbol || '').replace(/USDT$/, '')}`,
+      body: `${probabilityText} · n=${sampleCount} · ${marketType} · ${scope}${confidence} · advisory; not trade success`,
+      tag: alert.id,
+    };
+  }
+
   function lifecycleInfo(row) {
     const lifecycleValue = row.lifecycle;
     const lifecycle = lifecycleValue && typeof lifecycleValue === 'object' ? lifecycleValue : {};
@@ -115,9 +139,18 @@
   }
 
   function confirmationInfo(row) {
+    if (row.distance_to_confirmation_pct === 0 && String(row.alert_type || '').endsWith('_confirmed')) {
+      return {
+        gapPct: 0,
+        threshold: 'Current structural transition confirmed',
+        explanation: 'The current flip transition is confirmed; no additional confirmation move is required.',
+        available: true,
+      };
+    }
     const sourceValue = row.confirmation_distance || row.distance_to_confirmation || row.confirmation;
     const source = sourceValue && typeof sourceValue === 'object' ? sourceValue : {};
-    const explicitGap = finite(source.gap_7d_30d_pct ?? source.fast_gap_pct ?? source.signed_gap_pct ?? row.fast_gap_pct);
+    const requiredMove = finite(row.distance_to_confirmation_pct ?? source.distance_to_confirmation_pct ?? source.distance_to_cross_pct);
+    const explicitGap = requiredMove ?? finite(source.gap_7d_30d_pct ?? source.fast_gap_pct ?? source.signed_gap_pct ?? row.fast_gap_pct);
     const v7 = metricValue(row, 7);
     const v30 = metricValue(row, 30);
     const gapPct = explicitGap !== null ? explicitGap : (v7 !== null && v30 !== null && v30 !== 0 ? (v7 / v30 - 1) * 100 : null);
@@ -138,5 +171,5 @@
     };
   }
 
-  return { ACTIVE_STATES, buildStateMap, confirmationInfo, isViewed, lifecycleInfo, probability, queueIdentity, samples, selectQueueRows };
+  return { ACTIVE_STATES, buildStateMap, confirmationInfo, escapeHTML, isViewed, lifecycleInfo, notificationCopy, probability, queueIdentity, samples, selectQueueRows };
 });

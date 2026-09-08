@@ -4,7 +4,7 @@
   "private": true,
   "description": "Local Binance rolling VWAP scanner",
   "scripts": {
-    "check": "node --check static/vendor/lightweight-charts.standalone.production.js"
+    "check": "node --check static/vendor/lightweight-charts.standalone.production.js && node --check static/action-queue.js && node --test tests/frontend_action_queue.test.js tests/frontend_dom_contract.test.js"
   },
   "dependencies": {
     "lightweight-charts": "5.2.1"

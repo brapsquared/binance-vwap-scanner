@@ -5,11 +5,32 @@ const assert = require('node:assert/strict');
 const {
   buildStateMap,
   confirmationInfo,
+  escapeHTML,
   lifecycleInfo,
   isViewed,
+  notificationCopy,
   queueIdentity,
   selectQueueRows,
 } = require('../static/action-queue.js');
+
+test('HTML escaping neutralizes provider-derived markup', () => {
+  assert.equal(
+    escapeHTML(`<img src=x onerror="globalThis.pwned=1">&'`),
+    '&lt;img src=x onerror=&quot;globalThis.pwned=1&quot;&gt;&amp;&#39;',
+  );
+});
+
+test('browser notification copy carries probability context and perp warning', () => {
+  const copy = notificationCopy(
+    { id: 'event-1', symbol: 'BETAUSDT', label: 'Bearish flip watch', direction: 'short', probability: 0.61, samples: 180, trend_score: -1 },
+    { symbol: 'BETAUSDT', market_type: 'perp', probability_horizon_days: 20, probability_model_scope: 'spot-trained transfer' },
+  );
+  assert.match(copy.body, /61% empirical 20D short continuation association/);
+  assert.match(copy.body, /n=180/);
+  assert.match(copy.body, /perp-only/);
+  assert.match(copy.body, /lower confidence/);
+  assert.match(copy.body, /not trade success/);
+});
 
 function row(overrides = {}) {
   return {
@@ -102,6 +123,21 @@ test('state map models Close to all four VWAP comparisons and missing history', 
 });
 
 test('confirmation details prefer API fields and otherwise derive the signed 7D/30D gap', () => {
+  assert.deepEqual(confirmationInfo(row({
+    alert_type: 'bullish_flip_confirmed',
+    distance_to_confirmation_pct: 0,
+    confirmation: { gap_7d_30d_pct: 4, next_threshold: '30D above 90D', explanation: 'Next layer remains unresolved.' },
+  })), {
+    gapPct: 0,
+    threshold: 'Current structural transition confirmed',
+    explanation: 'The current flip transition is confirmed; no additional confirmation move is required.',
+    available: true,
+  });
+  assert.equal(confirmationInfo(row({
+    alert_type: 'bullish_flip_watch',
+    distance_to_confirmation_pct: 2.040816,
+    confirmation: { gap_7d_30d_pct: -2, distance_to_cross_pct: 2.040816, next_threshold: '7D above 30D' },
+  })).gapPct, 2.040816);
   assert.deepEqual(confirmationInfo(row({ confirmation: { gap_7d_30d_pct: -1.25, next_threshold: '7D above 30D', explanation: 'Needs a fast-VWAP recapture.' } })), {
     gapPct: -1.25,
     threshold: '7D above 30D',

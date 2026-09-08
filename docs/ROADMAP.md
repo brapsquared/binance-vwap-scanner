@@ -2,13 +2,13 @@
 
 ## Current delivery wave
 
-- [ ] Action Queue
-- [ ] Alert lifecycle and age
-- [ ] Minimum probability and sample controls
-- [ ] Spot/perp-only market filter
-- [ ] Distance-to-confirmation explanation
-- [ ] Scheduled daily advisory scan and delivery hook
-- [ ] Four-VWAP ticker state map
+- [x] Action Queue
+- [x] Alert lifecycle and age
+- [x] Minimum probability and sample controls
+- [x] Spot/perp-only market filter
+- [x] Distance-to-confirmation explanation
+- [x] Scheduled daily advisory scan and delivery hook
+- [x] Four-VWAP ticker state map
 
 ## Remaining recommendations for future builds
 

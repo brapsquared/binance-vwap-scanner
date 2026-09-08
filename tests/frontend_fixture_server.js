@@ -17,7 +17,7 @@ const rows = [
     symbol: 'ALPHAUSDT', price: 105, market_type: 'spot', market_cap: 12_400_000_000, history_days: 500, as_of: '2026-09-09',
     metrics: metrics(105, [104, 100, 96, 90]), trend_score: 4, trend_level: 'Strong up', score_change_5d: 2,
     alert_type: 'bullish_flip_confirmed', continuation_probability: 0.68, probability_samples: 240,
-    probability_horizon_days: 20, probability_model_scope: 'spot-trained', fast_gap_pct: 4,
+    probability_horizon_days: 10, probability_model_scope: 'spot-trained', fast_gap_pct: 4,
     next_structural_threshold: null, next_structural_explanation: 'All four structural comparisons already align long.',
     signal_discussion: { headline: 'Confirmed upward transition', body: 'Fixture data for local browser verification. This is an advisory state, not a trade instruction.' },
   },
@@ -27,7 +27,7 @@ const rows = [
     alert_type: 'bearish_flip_watch', continuation_probability: 0.61, probability_samples: 180,
     probability_horizon_days: 20, probability_model_scope: 'spot-trained transfer', fast_gap_pct: -3,
     next_structural_threshold: { left: '7D', right: '30D', direction: 'short' },
-    next_structural_explanation: '7D must hold below 30D through the next qualifying structural transition.',
+    next_structural_explanation: '<img id="xss-probe" src=x onerror="globalThis.__vwapXss=1">7D must hold below 30D through the next qualifying structural transition.',
     signal_discussion: { headline: 'Bearish flip watch', body: 'Perp-only fixture probability is transferred from spot calibration and should be treated as lower confidence.' },
   },
   {

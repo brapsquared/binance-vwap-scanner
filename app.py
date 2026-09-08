@@ -49,6 +49,20 @@ def parse_action_queue_filters(query: dict[str, list[str]]) -> dict:
     }
 
 
+def is_trusted_mutation_request(headers) -> bool:
+    host = (headers.get("Host") or "").lower()
+    host_name = host.rsplit(":", 1)[0]
+    if host_name not in {"127.0.0.1", "localhost"}:
+        return False
+    if (headers.get("Sec-Fetch-Site") or "").lower() == "cross-site":
+        return False
+    origin = headers.get("Origin")
+    if not origin:
+        return True
+    parsed = urlparse(origin)
+    return parsed.scheme == "http" and parsed.netloc.lower() == host
+
+
 def run_refresh():
     try:
         refresh(DATA)
@@ -114,6 +128,8 @@ class Handler(SimpleHTTPRequestHandler):
     def do_POST(self):
         if urlparse(self.path).path != "/api/refresh":
             return self.send_error(404)
+        if not is_trusted_mutation_request(self.headers):
+            return self.send_error(403, "Cross-origin refresh is not allowed")
         if not REFRESH_LOCK.acquire(blocking=False):
             return self.send_json({"accepted": False, **REFRESH_STATE}, status=409)
         REFRESH_STATE.update({"running": True, "started_at": datetime.now(timezone.utc).isoformat(), "finished_at": None, "error": None})
