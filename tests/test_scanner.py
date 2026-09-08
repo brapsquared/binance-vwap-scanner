@@ -127,6 +127,16 @@ class RollingVwapTests(unittest.TestCase):
         self.assertAlmostEqual(latest["vwap_3"], 9.0)
         self.assertAlmostEqual(latest["vwap_7"], 7.0)
 
+    def test_multi_series_rejects_non_date_provider_timestamps(self):
+        rows = [
+            {"time": "2026-01-01", "close_price": "10", "coin_volume": "1", "dollar_volume": "10"},
+            {"time": '<img src=x onerror="globalThis.pwned=1">', "close_price": "999", "coin_volume": "1", "dollar_volume": "999"},
+        ]
+
+        series = compute_multi_series(rows, windows=(1,))
+
+        self.assertEqual(series, [{"time": "2026-01-01", "close": 10.0, "vwap_1": 10.0}])
+
     def test_snapshot_contains_metrics_for_every_window(self):
         histories = {
             "AAAUSDT": [{"time": "t", "close": 12.0, "vwap_7": 10.0, "vwap_30": None}]

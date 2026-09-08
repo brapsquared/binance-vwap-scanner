@@ -121,11 +121,35 @@ def trailing_median_quote_volume(rows: Sequence[dict], days: int = 30) -> float 
     return float(statistics.median(values)) if values else None
 
 
+def _normalized_candle_time(raw_time: object) -> str | None:
+    text = str(raw_time)
+    if text.isdigit():
+        value = int(text)
+        if value >= 100_000_000_000:
+            try:
+                return datetime.fromtimestamp(value / 1000, tz=timezone.utc).date().isoformat()
+            except (OSError, OverflowError, ValueError):
+                return None
+        return text
+    try:
+        return datetime.strptime(text, "%Y-%m-%d").date().isoformat()
+    except ValueError:
+        return None
+
+
 def compute_multi_series(rows: Iterable[dict], windows: Sequence[int] = VWAP_WINDOWS) -> list[dict]:
     """Build close plus multiple rolling VWAPs from quote/base volume."""
     windows = tuple(sorted(set(int(value) for value in windows)))
-    deduped = {str(row.get("time")): row for row in rows}
-    ordered = sorted(deduped.values(), key=lambda row: int(row.get("time", 0)) if str(row.get("time", "")).isdigit() else str(row.get("time", "")))
+    normalized_rows = []
+    for row in rows:
+        normalized_time = _normalized_candle_time(row.get("time"))
+        if normalized_time is not None:
+            normalized_rows.append({**row, "time": normalized_time})
+    deduped = {row["time"]: row for row in normalized_rows}
+    ordered = sorted(
+        deduped.values(),
+        key=lambda row: (0, int(row["time"])) if row["time"].isdigit() else (1, row["time"]),
+    )
     base_prefix = [0.0]
     quote_prefix = [0.0]
     result = []
@@ -137,12 +161,7 @@ def compute_multi_series(rows: Iterable[dict], windows: Sequence[int] = VWAP_WIN
         quote = quote if quote is not None and quote >= 0 else 0.0
         base_prefix.append(base_prefix[-1] + base)
         quote_prefix.append(quote_prefix[-1] + quote)
-        raw_time = row.get("time")
-        if str(raw_time).isdigit():
-            date = datetime.fromtimestamp(int(raw_time) / 1000, tz=timezone.utc).date().isoformat()
-        else:
-            date = str(raw_time)
-        point = {"time": date, "close": close}
+        point = {"time": row["time"], "close": close}
         for window in windows:
             if index + 1 >= window:
                 base_sum = base_prefix[index + 1] - base_prefix[index + 1 - window]

@@ -14,7 +14,7 @@ const metrics = (price, values) => Object.fromEntries(['7', '30', '90', '365'].m
 
 const rows = [
   {
-    symbol: 'ALPHAUSDT', price: 105, market_type: 'spot', market_cap: 12_400_000_000, history_days: 500, as_of: '2026-09-09',
+    symbol: 'ALPHAUSDT', price: 105, market_type: 'spot', market_cap: 12_400_000_000, history_days: 500, as_of: '<img id="asof-xss" src=x onerror="globalThis.__vwapXss=1">',
     metrics: metrics(105, [104, 100, 96, 90]), trend_score: 4, trend_level: 'Strong up', score_change_5d: 2,
     alert_type: 'bullish_flip_confirmed', continuation_probability: 0.68, probability_samples: 240,
     probability_horizon_days: 10, probability_model_scope: 'spot-trained', fast_gap_pct: 4,
