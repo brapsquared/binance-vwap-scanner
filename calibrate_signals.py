@@ -15,6 +15,7 @@ OUTPUT = ROOT / "models" / "trend_probability.json"
 WINDOWS = (7, 30, 90, 365)
 HORIZON = 20
 MIN_LIQUIDITY = 5_000_000
+MIN_PROBABILITY_SAMPLES = 30
 
 
 def prepare(frame: pd.DataFrame) -> pd.DataFrame:
@@ -109,7 +110,7 @@ def main():
     for key in groups:
         values = store[(key, "train")]
         train_probabilities[key] = empirical_probability(values["wins"], values["samples"])
-    evaluated = [record for record in test_records if store[(record["key"], "train")]["samples"] >= 30]
+    evaluated = [record for record in test_records if store[(record["key"], "train")]["samples"] >= MIN_PROBABILITY_SAMPLES]
     if evaluated:
         probs = np.array([train_probabilities[record["key"]] for record in evaluated])
         actual = np.array([record["continued"] for record in evaluated], dtype=float)
@@ -122,6 +123,8 @@ def main():
         "version": "mtf-vwap-state-v1",
         "generated_at": pd.Timestamp.now(tz="UTC").isoformat(),
         "horizon_days": HORIZON,
+        "minimum_samples": MIN_PROBABILITY_SAMPLES,
+        "availability_definition": f"Buckets with fewer than {MIN_PROBABILITY_SAMPLES} observations are unavailable",
         "definition": "Probability that the close-to-close 20-day return continues in the indicated trend or flip direction",
         "smoothing": "Beta prior: 10 wins / 20 samples",
         "sampling": "20-day non-overlapping score samples; 10-day cooldown for flip alerts",

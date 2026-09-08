@@ -126,6 +126,17 @@ def _metric(price, vwap):
     return {"vwap": vwap, "distance_pct": distance, "status": "above" if distance >= 0 else "below"}
 
 
+def signal_model_metadata(model: dict) -> dict:
+    return {
+        "signal_model": model.get("version"),
+        "signal_probability_horizon_days": model.get("horizon_days"),
+        "signal_probability_min_samples": model.get("minimum_samples", 30),
+        "signal_probability_definition": model.get("definition"),
+        "signal_probability_scope": model.get("universe"),
+        "signal_oos": model.get("oos"),
+    }
+
+
 def build_snapshot(histories: dict[str, list[dict]], windows: Sequence[int] | None = None) -> list[dict]:
     rows = []
     for symbol, series in histories.items():
@@ -183,7 +194,11 @@ def build_market_universe(spot_payload: dict, futures_payload: dict) -> dict[str
     ]
     spot_bases = {row["baseAsset"] for row in spot_rows}
     universe = {
-        row["symbol"]: {"symbol": row["symbol"], "base_asset": row["baseAsset"], "market_type": "spot"}
+        row["symbol"]: {
+            "symbol": row["symbol"], "base_asset": row["baseAsset"], "market_type": "spot",
+            "market_label": "Spot", "instrument_type": "spot", "venue": "binance-spot",
+            "is_perp_only": False,
+        }
         for row in spot_rows
     }
     for row in futures_payload.get("symbols", []):
@@ -197,7 +212,11 @@ def build_market_universe(spot_payload: dict, futures_payload: dict) -> dict[str
                 break
         if canonical in spot_bases:
             continue
-        universe.setdefault(row["symbol"], {"symbol": row["symbol"], "base_asset": base, "market_type": "perp"})
+        universe.setdefault(row["symbol"], {
+            "symbol": row["symbol"], "base_asset": base, "market_type": "perp",
+            "market_label": "Perp-only", "instrument_type": "perpetual", "venue": "binance-usdm",
+            "is_perp_only": True,
+        })
     return dict(sorted(universe.items()))
 
 
@@ -416,9 +435,7 @@ def refresh(output_dir: Path, history_days: int = HISTORY_DAYS, window: int = WI
             "market_cap_source": "Velo circulating market cap snapshot",
             "market_cap_coverage": sum(1 for row in snapshot if row.get("market_cap") is not None),
             "market_cap_unavailable_coin_ids": sorted(set(cap_rejected)),
-            "signal_model": model.get("version"),
-            "signal_probability_horizon_days": model.get("horizon_days"),
-            "signal_oos": model.get("oos"),
+            **signal_model_metadata(model),
             "alert_count": len(alerts),
             "alert_history_count": alert_store.count(),
             "batch_size": batch_size,

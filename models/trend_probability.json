@@ -2,6 +2,8 @@
   "version": "mtf-vwap-state-v1",
   "generated_at": "2026-09-07T10:12:36.568656+00:00",
   "horizon_days": 20,
+  "minimum_samples": 30,
+  "availability_definition": "Buckets with fewer than 30 observations are unavailable",
   "definition": "Probability that the close-to-close 20-day return continues in the indicated trend or flip direction",
   "smoothing": "Beta prior: 10 wins / 20 samples",
   "sampling": "20-day non-overlapping score samples; 10-day cooldown for flip alerts",

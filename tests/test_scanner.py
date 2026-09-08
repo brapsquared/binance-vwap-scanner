@@ -16,6 +16,7 @@ from scanner import (
     fetch_resilient,
     normalize_binance_klines,
     scale_compatible,
+    signal_model_metadata,
     time_windows,
     trailing_median_quote_volume,
 )
@@ -97,7 +98,13 @@ class RollingVwapTests(unittest.TestCase):
         ]}
         universe = build_market_universe(spot, futures)
         self.assertEqual(universe["BTCUSDT"]["market_type"], "spot")
+        self.assertEqual(universe["BTCUSDT"]["market_label"], "Spot")
+        self.assertEqual(universe["BTCUSDT"]["venue"], "binance-spot")
+        self.assertFalse(universe["BTCUSDT"]["is_perp_only"])
         self.assertEqual(universe["HYPEUSDT"]["market_type"], "perp")
+        self.assertEqual(universe["HYPEUSDT"]["market_label"], "Perp-only")
+        self.assertEqual(universe["HYPEUSDT"]["instrument_type"], "perpetual")
+        self.assertTrue(universe["HYPEUSDT"]["is_perp_only"])
         self.assertNotIn("1000PEPEUSDT", universe)
         self.assertNotIn("BTCDOMUSDT", universe)
 
@@ -143,6 +150,18 @@ class RollingVwapTests(unittest.TestCase):
             {"time": "2", "dollar_volume": "300"},
         ]
         self.assertEqual(trailing_median_quote_volume(rows, days=2), 200.0)
+
+    def test_signal_model_metadata_exposes_probability_control_contract(self):
+        metadata = signal_model_metadata({
+            "version": "v1", "horizon_days": 20, "minimum_samples": 30,
+            "definition": "Directional continuation association", "universe": "Spot history",
+            "oos": {"records": 100},
+        })
+        self.assertEqual(metadata["signal_model"], "v1")
+        self.assertEqual(metadata["signal_probability_horizon_days"], 20)
+        self.assertEqual(metadata["signal_probability_min_samples"], 30)
+        self.assertEqual(metadata["signal_probability_definition"], "Directional continuation association")
+        self.assertEqual(metadata["signal_probability_scope"], "Spot history")
 
 
 if __name__ == "__main__":
